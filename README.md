@@ -37,6 +37,9 @@ craft-<name> = { git = "https://github.com/storytold/craft-libs", rev = "<commit
 - [`craft-docpath`](crates/docpath/src/lib.rs): decides whether a path or `file:` URL stored in a
   document may be opened. Paths stored in documents are followed only when they are local or on the
   document's own network share; other network paths, device paths and non-file URLs are refused.
+- [`craft-font-info`](crates/font-info/README.md): what a font face offers for fine typography:
+  variation axes and named instances by the font's own names, and every OpenType feature with
+  its stylistic-set or character-variant name and the characters it changes.
 - [`craft-fonts-build`](crates/fonts-build/README.md): embeds the optional craft-fonts faces
   from an app's `build.rs` (`CRAFT_FONTS_DIR`, `CRAFT_FONTS_REQUIRED`, script filters) as a table
   of `EmbeddedFace`s. No dependencies; the app picks the faces.
