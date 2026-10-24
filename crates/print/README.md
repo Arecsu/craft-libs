@@ -81,8 +81,12 @@ their own fidelity checks.
 
 Native Windows PDF submission checks the driver's validated copy count and explicit
 simplex/duplex and grayscale requests before sending. Collation must be retained when both
-the page count and copy count exceed one. A driver that drops or changes these options is
-refused; select supported options or flatten grayscale into the print-ready page content.
+the page count and copy count exceed one. A driver that offers one of these options and drops
+or changes it is refused; select supported options or flatten grayscale into the print-ready
+page content. A driver without the feature, per its PrintCapabilities, is accepted when it can
+only do what was asked: one-sided on a queue with no two-sided feature, grayscale on one with no
+colour option, uncollated copies on one that can't collate. Two-sided on such a queue is
+refused, and so are collated copies: Windows doesn't document collating for such a driver.
 Without an explicit duplex request, the queue default applies. Without a grayscale request the
 ticket names no colour, so the colour in the user's printing preferences (Properties…, or
 Windows Settings) applies, black and white included. Single-page or single-copy jobs have no
