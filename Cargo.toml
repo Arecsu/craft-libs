@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-exclude = ["vendor/krilla", "vendor/hayro", "vendor/hayro-interpret", "vendor/hayro-syntax", "vendor/hayro-jbig2"]
+exclude = ["vendor/krilla", "vendor/hayro", "vendor/hayro-interpret", "vendor/hayro-syntax", "vendor/hayro-jbig2", "vendor/hayro-cmap", "vendor/hayro-postscript"]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,7 +24,9 @@ thiserror = "2"
 craft-atomic = { path = "crates/atomic" }
 craft-cms = { path = "crates/cms" }
 craft-docpath = { path = "crates/docpath" }
+craft-fonts-build = { path = "crates/fonts-build" }
 craft-i18n = { path = "crates/i18n" }
+craft-keymap = { path = "crates/keymap" }
 craft-media = { path = "crates/media" }
 craft-print = { path = "crates/print" }
 craft-quit = { path = "crates/quit" }
@@ -54,6 +56,8 @@ hayro = { path = "vendor/hayro" }
 hayro-interpret = { path = "vendor/hayro-interpret" }
 hayro-syntax = { path = "vendor/hayro-syntax" }
 hayro-jbig2 = { path = "vendor/hayro-jbig2" }
+hayro-cmap = { path = "vendor/hayro-cmap" }
+hayro-postscript = { path = "vendor/hayro-postscript" }
 ecolor = { git = "https://github.com/storytold/egui.git", rev = "173cc7375d35dc5fbc5b5d0994fdf787f547c5d1" }
 emath = { git = "https://github.com/storytold/egui.git", rev = "173cc7375d35dc5fbc5b5d0994fdf787f547c5d1" }
 epaint = { git = "https://github.com/storytold/egui.git", rev = "173cc7375d35dc5fbc5b5d0994fdf787f547c5d1" }

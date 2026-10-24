@@ -133,18 +133,12 @@ impl Type0 {
 
         let interpolated = interpolator.interpolate(&self.table)?;
 
+        // PdfCraft patch (31): `2_u32.pow(32)` overflowed (a panic with overflow checks on).
+        let max_sample = ((1u64 << self.bits_per_sample) - 1) as f32;
         let mut out = interpolated
             .iter()
             .zip(self.decode.iter())
-            .map(|(x, decode)| {
-                interpolate(
-                    *x,
-                    0.0,
-                    (2_u32.pow(self.bits_per_sample as u32) - 1) as f32,
-                    decode.0,
-                    decode.1,
-                )
-            })
+            .map(|(x, decode)| interpolate(*x, 0.0, max_sample, decode.0, decode.1))
             .collect::<SmallVec<_>>();
 
         self.clamper.clamp_output(&mut out);
@@ -323,5 +317,26 @@ impl Key {
         }
 
         Some(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::function::Function;
+    use hayro_syntax::object::{FromBytes, Object};
+    use smallvec::smallvec;
+
+    /// PdfCraft patch (31): 32-bit samples scale by `2^32 - 1` without overflowing (adapted from
+    /// PdfCraft's `raster::tests::sampled_functions_interpolate_their_grid_as_before`).
+    #[test]
+    fn thirty_two_bit_samples_do_not_overflow() {
+        let mut data = b"<< /FunctionType 0 /Domain [0 1] /Range [0 1] /Size [2] /BitsPerSample 32 /Length 8 >>\nstream\n".to_vec();
+        data.extend_from_slice(&[0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]);
+        data.extend_from_slice(b"\nendstream");
+
+        let object = Object::from_bytes(&data).unwrap();
+        let function = Function::new(&object).unwrap();
+        assert_eq!(function.eval(smallvec![0.0]).unwrap().as_slice(), &[0.0]);
+        assert_eq!(function.eval(smallvec![1.0]).unwrap().as_slice(), &[1.0]);
     }
 }
