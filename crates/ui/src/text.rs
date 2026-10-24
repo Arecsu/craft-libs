@@ -2,7 +2,68 @@
 
 use std::sync::Arc;
 
-use egui::{Align, Galley, Rect, epaint::text::PlacedRow, pos2, vec2};
+use egui::emath::GuiRounding as _;
+use egui::{Align, Color32, Galley, Painter, Pos2, Rect, Vec2, epaint::TextShape, epaint::text::PlacedRow, pos2, vec2};
+
+/// Already-shaped rows and their explicit placement relative to a reading area.
+///
+/// The normalized galley alone does not include its reading-area offset. Use [`Self::paint`]
+/// or [`Self::text_shape`] to retain it; there is deliberately no implicit galley conversion.
+#[derive(Clone, Debug)]
+#[must_use]
+pub enum AlignedGalley {
+    /// A complete left-anchored logical bound, with the reading area kept separately.
+    Aligned { galley: Arc<Galley>, paint_offset: Vec2, reading_rect: Rect },
+    /// An invalid width leaves the original galley untouched, including its alignment.
+    InvalidWidth { original: Arc<Galley> },
+}
+
+impl AlignedGalley {
+    /// The requested reading area, in coordinates relative to the supplied reading origin.
+    /// An invalid width has no reading rectangle.
+    pub fn reading_rect(&self) -> Option<Rect> {
+        match self {
+            Self::Aligned { reading_rect, .. } => Some(*reading_rect),
+            Self::InvalidWidth { .. } => None,
+        }
+    }
+
+    /// The original text height, independent of horizontal overflow.
+    pub fn height(&self) -> f32 {
+        match self {
+            Self::Aligned { reading_rect, .. } => reading_rect.height(),
+            Self::InvalidWidth { original } => original.size().y,
+        }
+    }
+
+    /// A shape placed at the reading area's origin, retaining the explicit galley offset.
+    /// Like [`TextShape::new`], this leaves final pixel rounding to the renderer.
+    pub fn text_shape(&self, reading_origin: Pos2, color: Color32) -> TextShape {
+        match self {
+            Self::Aligned { galley, paint_offset, .. } => TextShape::new(reading_origin + *paint_offset, galley.clone(), color),
+            Self::InvalidWidth { original } => TextShape::new(reading_origin, original.clone(), color),
+        }
+    }
+
+    /// Paint at the reading area's origin using the painter's existing clipping rectangle.
+    ///
+    /// When text rounding is enabled, snap the reading origin before adding the pixel-aligned
+    /// offset. Otherwise translating an origin near half a pixel could change which pixel the
+    /// renderer selects. An invalid width uses the original painting path unchanged.
+    pub fn paint(self, painter: &Painter, reading_origin: Pos2, color: Color32) {
+        match self {
+            Self::Aligned { galley, paint_offset, .. } => {
+                let origin = if painter.ctx().tessellation_options(|options| options.round_text_to_pixels) {
+                    reading_origin.round_to_pixels(galley.pixels_per_point)
+                } else {
+                    reading_origin
+                };
+                painter.galley(origin + paint_offset, galley, color);
+            }
+            Self::InvalidWidth { original } => painter.galley(reading_origin, original, color),
+        }
+    }
+}
 
 /// Align each row inside `width`, without changing its glyphs, wrapping, or logical text.
 ///
@@ -11,38 +72,48 @@ use egui::{Align, Galley, Rect, epaint::text::PlacedRow, pos2, vec2};
 /// The caller supplies the row alignment, for example from paragraph direction in its shaper.
 /// This helper uses only stock egui APIs and does not implement bidirectional shaping.
 ///
-/// The returned galley uses a left-edge anchor (`job.halign = Align::Min`) and its logical
-/// rectangle is exactly the requested reading area. Ink can extend outside that rectangle:
-/// oversized right-aligned rows overflow to the left, and centered rows overflow on both sides.
-/// `mesh_bounds` describes the complete ink, including that overflow. Apply clipping separately
-/// when required. Positions snap down to physical pixels so right-aligned rows do not cross the
-/// right edge through nearest-pixel rounding.
+/// The result keeps the requested reading rectangle separately from the complete logical bound.
+/// Oversized right-aligned rows overflow to the left, and centered rows overflow on both sides.
+/// The galley is normalized to a left-edge anchor (`job.halign = Align::Min`, `rect.left() = 0`);
+/// its explicit paint offset preserves every row's position relative to the reading area.
+/// `mesh_bounds` describes the complete normalized ink. Apply clipping separately when required.
+/// Positions snap down to physical pixels so right-aligned rows do not cross the right edge
+/// through nearest-pixel rounding.
 ///
-/// Use the returned galley for painting; per-row alignment is not represented by its single
-/// `LayoutJob` alignment, so editable text should retain its original galley for hit testing.
-/// Zero width is valid and may place ink entirely outside the logical rectangle.
-/// Invalid widths leave the input untouched. Row positions are copy-on-write; the original
-/// shared glyph meshes remain shared, and a cached galley is never modified.
-#[must_use]
-pub fn align_galley_rows(mut galley: Arc<Galley>, width: f32, mut align: impl FnMut(&PlacedRow) -> Align) -> Arc<Galley> {
+/// Use the result's paint method, supplying the reading area's origin. Per-row alignment is not
+/// represented by its single `LayoutJob` alignment, so editable text should retain its original
+/// galley for hit testing.
+/// Zero width is valid and may place ink entirely outside the reading rectangle.
+/// Invalid widths explicitly return the untouched original, without calling `align`.
+/// Row positions are copy-on-write; the original shared glyph meshes remain shared, and a cached
+/// galley is never modified.
+pub fn align_galley_rows(mut galley: Arc<Galley>, width: f32, mut align: impl FnMut(&PlacedRow) -> Align) -> AlignedGalley {
     if !width.is_finite() || width < 0.0 {
-        return galley;
+        return AlignedGalley::InvalidWidth { original: galley };
     }
     let positioned = Arc::make_mut(&mut galley);
     if positioned.job.halign != Align::Min {
         Arc::make_mut(&mut positioned.job).halign = Align::Min;
     }
-    let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(width, positioned.rect.height()));
-    let mut mesh_bounds = Rect::NOTHING;
+    let reading_rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(width, positioned.rect.height()));
+    let mut bounds = reading_rect;
     for row in &mut positioned.rows {
         let spare = f64::from(width) - f64::from(row.size.x);
         let ppp = f64::from(positioned.pixels_per_point);
         row.pos.x = ((f64::from(align(row).to_factor()) * spare * ppp).floor() / ppp) as f32;
+        bounds |= row.rect();
+    }
+    let paint_offset = vec2(bounds.left(), 0.0);
+    let mut rect = reading_rect.translate(-paint_offset);
+    let mut mesh_bounds = Rect::NOTHING;
+    for row in &mut positioned.rows {
+        row.pos.x -= paint_offset.x;
+        rect |= row.rect();
         mesh_bounds |= row.visuals.mesh_bounds.translate(row.pos.to_vec2());
     }
     positioned.rect = rect;
     positioned.mesh_bounds = mesh_bounds;
-    galley
+    AlignedGalley::Aligned { galley, paint_offset, reading_rect }
 }
 
 #[cfg(test)]
@@ -53,13 +124,46 @@ mod tests {
         layout_text("Short\nA longer line\nEnd", 1.0, Align::Min)
     }
 
-    fn layout_text(text: &str, ppp: f32, halign: Align) -> Arc<Galley> {
+    fn layout_with_context(text: &str, ppp: f32, halign: Align) -> (egui::Context, Arc<Galley>) {
         let ctx = egui::Context::default();
         ctx.set_pixels_per_point(ppp);
         ctx.run_ui(egui::RawInput::default(), |_| {}).drop_without_applying_deltas();
-        let mut job = egui::text::LayoutJob::simple(text.into(), egui::FontId::proportional(14.0), egui::Color32::BLACK, f32::INFINITY);
+        let mut job = egui::text::LayoutJob::simple(text.into(), egui::FontId::proportional(14.0), Color32::BLACK, f32::INFINITY);
         job.halign = halign;
-        ctx.fonts_mut(|fonts| fonts.layout_job(job))
+        let galley = ctx.fonts_mut(|fonts| fonts.layout_job(job));
+        (ctx, galley)
+    }
+
+    fn layout_text(text: &str, ppp: f32, halign: Align) -> Arc<Galley> {
+        layout_with_context(text, ppp, halign).1
+    }
+
+    fn parts(aligned: &AlignedGalley) -> (&Arc<Galley>, Vec2, Rect) {
+        match aligned {
+            AlignedGalley::Aligned { galley, paint_offset, reading_rect } => (galley, *paint_offset, *reading_rect),
+            AlignedGalley::InvalidWidth { .. } => panic!("a valid fixture width must produce aligned rows"),
+        }
+    }
+
+    fn close_rect(actual: Rect, expected: Rect, epsilon: f32) {
+        assert!((actual.min - expected.min).length() <= epsilon, "{actual:?} != {expected:?}");
+        assert!((actual.max - expected.max).length() <= epsilon, "{actual:?} != {expected:?}");
+    }
+
+    // The pre-normalization row placement, independent of the new wrapper/offset code. This is
+    // the old physical-pixel floor formula, applied to the original shared glyph rows.
+    fn reading_space_reference(original: &Galley, width: f32, alignments: &[Align]) -> Arc<Galley> {
+        let mut reference = original.clone();
+        reference.rect = Rect::from_min_size(Pos2::ZERO, vec2(width, original.rect.height()));
+        reference.mesh_bounds = Rect::NOTHING;
+        assert_eq!(reference.rows.len(), alignments.len());
+        for (row, alignment) in reference.rows.iter_mut().zip(alignments) {
+            let pixels = (f64::from(width) - f64::from(row.size.x)) * f64::from(alignment.to_factor()) * f64::from(original.pixels_per_point);
+            row.pos.x = (pixels.floor() / f64::from(original.pixels_per_point)) as f32;
+            reference.rect |= row.rect();
+            reference.mesh_bounds |= row.visuals.mesh_bounds.translate(row.pos.to_vec2());
+        }
+        Arc::new(reference)
     }
 
     #[test]
@@ -67,7 +171,7 @@ mod tests {
         let original = layout();
         let positions: Vec<_> = original.rows.iter().map(|row| row.pos).collect();
         let mut i = 0;
-        let aligned = align_galley_rows(original.clone(), 400.0, |_| {
+        let result = align_galley_rows(original.clone(), 400.0, |_| {
             let align = match i {
                 0 => Align::Max,
                 1 => Align::Min,
@@ -76,7 +180,10 @@ mod tests {
             i += 1;
             align
         });
+        let (aligned, offset, reading) = parts(&result);
         assert_eq!(i, 3);
+        assert_eq!(offset, Vec2::ZERO);
+        assert_eq!(result.reading_rect(), Some(reading));
         assert_eq!(original.rows.iter().map(|row| row.pos).collect::<Vec<_>>(), positions);
         assert!(Arc::ptr_eq(&original.job, &aligned.job));
         assert_eq!(aligned.num_vertices, original.num_vertices);
@@ -95,14 +202,24 @@ mod tests {
         }
         assert_eq!(aligned.size().x, 400.0);
         assert_eq!(aligned.size().y, original.size().y);
+        assert_eq!(result.height(), original.size().y);
     }
 
     #[test]
     fn invalid_widths_preserve_the_input() {
-        let original = layout();
-        for width in [f32::NAN, f32::INFINITY, -1.0] {
-            let aligned = align_galley_rows(original.clone(), width, |_| Align::Max);
-            assert!(Arc::ptr_eq(&original, &aligned));
+        for halign in [Align::Min, Align::Center, Align::Max] {
+            let original = layout_text("Short", 1.0, halign);
+            for width in [f32::NAN, f32::INFINITY, -1.0] {
+                let result = align_galley_rows(original.clone(), width, |_| panic!("an invalid width must not call the alignment callback"));
+                let AlignedGalley::InvalidWidth { original: unchanged } = &result else { panic!("invalid width must be explicit") };
+                assert!(Arc::ptr_eq(&original, unchanged));
+                assert_eq!(unchanged.job.halign, halign);
+                assert_eq!(result.reading_rect(), None);
+                assert_eq!(result.height(), original.size().y);
+                let shape = result.text_shape(pos2(17.25, 31.5), Color32::BLACK);
+                assert_eq!(shape.pos, pos2(17.25, 31.5));
+                assert!(Arc::ptr_eq(&shape.galley, &original));
+            }
         }
     }
 
@@ -112,29 +229,50 @@ mod tests {
         let width = 23.3;
         assert!(original.rows[0].size.x > width);
         for alignment in [Align::Min, Align::Center, Align::Max] {
-            let aligned = align_galley_rows(original.clone(), width, |_| alignment);
+            let result = align_galley_rows(original.clone(), width, |_| alignment);
+            let (aligned, offset, reading) = parts(&result);
             let row = &aligned.rows[0];
+            let x = offset.x + row.pos.x;
             let expected = (width - row.size.x) * alignment.to_factor();
-            assert!(row.pos.x <= expected + 0.0001);
-            assert!(expected - row.pos.x < 0.5);
-            assert_eq!(row.pos.x * 2.0, (row.pos.x * 2.0).floor());
+            assert!(x <= expected + 0.0001);
+            assert!(expected - x < 0.5);
+            assert_eq!(x * 2.0, (x * 2.0).floor());
             if alignment == Align::Max {
-                assert!(row.pos.x < 0.0);
-                assert!(row.rect().right() <= width + 0.0001);
+                assert!(x < 0.0);
+                assert!(x + row.size.x <= width + 0.0001);
             }
             assert_eq!(aligned.rect.left(), 0.0);
-            assert_eq!(aligned.rect.width(), width);
+            assert_eq!(aligned.job.halign, Align::Min);
+            assert_eq!(reading.width(), width);
+            assert!(aligned.rect.contains_rect(row.rect()));
+            assert!(aligned.rect.contains_rect(reading.translate(-offset)));
             assert!(aligned.mesh_bounds.contains_rect(row.visuals.mesh_bounds.translate(row.pos.to_vec2())));
         }
+    }
+
+    #[test]
+    fn overwide_right_aligned_rows_have_complete_logical_bounds() {
+        let original = layout_text("unbreakable-long-token", 2.0, Align::Min);
+        let width = 23.3;
+        assert!(original.rows[0].size.x > width, "the fixture must overflow the reading area");
+        let result = align_galley_rows(original, width, |_| Align::Max);
+        let (aligned, offset, _) = parts(&result);
+        let row = &aligned.rows[0];
+        let reading_row = row.rect().translate(offset);
+        assert!(reading_row.left() < 0.0, "the right-aligned overwide row must extend to the left");
+        assert!(reading_row.right() <= width, "the requested right reading edge stays fixed");
+        assert!(aligned.rect.contains_rect(row.rect()), "the public logical bound {:?} must contain the actual row {:?}", aligned.rect, row.rect());
     }
 
     #[test]
     fn fractional_width_and_nonleft_input_normalize_the_anchor() {
         for original_align in [Align::Min, Align::Center, Align::Max] {
             let original = layout_text("Short", 2.0, original_align);
-            let aligned = align_galley_rows(original.clone(), 163.3, |_| Align::Max);
+            let result = align_galley_rows(original.clone(), 163.3, |_| Align::Max);
+            let (aligned, offset, _) = parts(&result);
             assert_eq!(original.job.halign, original_align);
             assert_eq!(aligned.job.halign, Align::Min);
+            assert_eq!(offset, Vec2::ZERO);
             assert_eq!(aligned.rect.left(), 0.0);
             assert_eq!(aligned.rect.right(), 163.3);
             for row in &aligned.rows {
@@ -150,15 +288,21 @@ mod tests {
         for text in ["", "   ", "Short\n"] {
             let original = layout_text(text, 1.0, Align::Min);
             let height = original.rect.height();
-            let aligned = align_galley_rows(original, 80.25, |_| Align::Max);
+            let result = align_galley_rows(original, 80.25, |_| Align::Max);
+            let (aligned, offset, reading) = parts(&result);
+            assert_eq!(offset, Vec2::ZERO);
             assert_eq!(aligned.rect, Rect::from_min_size(pos2(0.0, 0.0), vec2(80.25, height)));
+            assert_eq!(reading, aligned.rect);
+            assert_eq!(result.height(), height);
         }
         let original = layout();
         let mut empty = (*original).clone();
         empty.rows.clear();
         empty.rect = Rect::ZERO;
         empty.mesh_bounds = Rect::NOTHING;
-        let aligned = align_galley_rows(Arc::new(empty), 80.25, |_| Align::Max);
+        let result = align_galley_rows(Arc::new(empty), 80.25, |_| Align::Max);
+        let (aligned, offset, _) = parts(&result);
+        assert_eq!(offset, Vec2::ZERO);
         assert_eq!(aligned.rect, Rect::from_min_size(pos2(0.0, 0.0), vec2(80.25, 0.0)));
         assert_eq!(aligned.mesh_bounds, Rect::NOTHING);
     }
@@ -170,13 +314,21 @@ mod tests {
             for width in [0.0, 163.3] {
                 for alignment in [Align::Min, Align::Center, Align::Max] {
                     let direct = align_galley_rows(original.clone(), width, |_| alignment);
-                    let first = align_galley_rows(original.clone(), 230.5, |_| Align::Max);
-                    let repeated = align_galley_rows(first, width, |_| alignment);
-                    assert_eq!(direct.rect.width(), width);
-                    for (a, b) in direct.rows.iter().zip(&repeated.rows) {
-                        assert_eq!(a.pos, b.pos);
-                        let pixel = a.pos.x * ppp;
-                        assert!((pixel - pixel.round()).abs() < 1e-4);
+                    for first_width in [3.5, 230.5] {
+                        let first = align_galley_rows(original.clone(), first_width, |_| Align::Max);
+                        let repeated = align_galley_rows(parts(&first).0.clone(), width, |_| alignment);
+                        let (a, a_offset, a_reading) = parts(&direct);
+                        let (b, b_offset, b_reading) = parts(&repeated);
+                        assert_eq!(a_reading.width(), width);
+                        assert_eq!(a_reading, b_reading);
+                        assert_eq!(a_offset, b_offset);
+                        assert_eq!(a.rect, b.rect);
+                        assert_eq!(a.mesh_bounds, b.mesh_bounds);
+                        for (a, b) in a.rows.iter().zip(&b.rows) {
+                            assert_eq!(a.pos, b.pos);
+                            let pixel = (a.pos.x + a_offset.x) * ppp;
+                            assert!((pixel - pixel.round()).abs() < 1e-4);
+                        }
                     }
                 }
             }
@@ -185,10 +337,12 @@ mod tests {
 
     #[test]
     fn logical_container_and_ink_bounds_remain_distinct() {
-        let aligned = align_galley_rows(layout_text("Short", 1.0, Align::Min), 400.0, |_| Align::Min);
+        let result = align_galley_rows(layout_text("Short", 1.0, Align::Min), 400.0, |_| Align::Min);
+        let (aligned, _, _) = parts(&result);
         assert_eq!(aligned.rect.width(), 400.0);
         assert!(aligned.mesh_bounds.right() < aligned.rect.right());
-        let whitespace = align_galley_rows(layout_text("   ", 1.0, Align::Min), 400.0, |_| Align::Max);
+        let result = align_galley_rows(layout_text("   ", 1.0, Align::Min), 400.0, |_| Align::Max);
+        let (whitespace, _, _) = parts(&result);
         assert_eq!(whitespace.rect.width(), 400.0);
         assert_eq!(whitespace.mesh_bounds, Rect::NOTHING);
     }
@@ -198,7 +352,136 @@ mod tests {
         let original = Arc::new((*layout()).clone());
         assert_eq!(Arc::strong_count(&original), 1);
         let before = Arc::as_ptr(&original);
-        let aligned = align_galley_rows(original, 400.0, |_| Align::Max);
-        assert_eq!(before, Arc::as_ptr(&aligned));
+        let result = align_galley_rows(original, 400.0, |_| Align::Max);
+        assert_eq!(before, Arc::as_ptr(parts(&result).0));
+    }
+
+    const MIXED: &str = "First extraordinarily long reading row\nSecond independently aligned reading row\nThird right-aligned overwide reading row";
+    const ALIGNMENTS: [Align; 3] = [Align::Min, Align::Center, Align::Max];
+
+    fn mixed(original: Arc<Galley>, width: f32) -> AlignedGalley {
+        assert_eq!(original.rows.len(), ALIGNMENTS.len());
+        assert!(original.rows.iter().all(|row| row.size.x > width), "each fixture row must overflow");
+        let mut index = 0;
+        let result = align_galley_rows(original, width, |_| {
+            let alignment = ALIGNMENTS[index];
+            index += 1;
+            alignment
+        });
+        assert_eq!(index, ALIGNMENTS.len());
+        result
+    }
+
+    #[test]
+    fn mixed_overflow_normalizes_bounds_without_changing_absolute_rows_or_ink() {
+        for ppp in [1.25, 1.5, 2.0] {
+            let original = layout_text(MIXED, ppp, Align::Center);
+            for width in [0.0, 23.3] {
+                let expected = reading_space_reference(&original, width, &ALIGNMENTS);
+                assert!(expected.rect.left() < 0.0 && expected.rect.right() > width, "fixture must overflow both reading edges");
+                let result = mixed(original.clone(), width);
+                let (aligned, offset, reading) = parts(&result);
+                assert_eq!(aligned.job.halign, Align::Min);
+                assert_eq!(aligned.rect.left_top(), Pos2::ZERO);
+                assert_eq!(reading, Rect::from_min_size(Pos2::ZERO, vec2(width, original.rect.height())));
+                assert_eq!(offset, vec2(expected.rect.left(), 0.0));
+                close_rect(aligned.rect.translate(offset), expected.rect, 1e-4 / ppp);
+                close_rect(aligned.mesh_bounds.translate(offset), expected.mesh_bounds, 1e-4 / ppp);
+                assert_eq!(aligned.num_vertices, original.num_vertices);
+                assert_eq!(aligned.num_indices, original.num_indices);
+                for ((row, expected), original) in aligned.rows.iter().zip(&expected.rows).zip(&original.rows) {
+                    assert!(Arc::ptr_eq(&row.row, &original.row));
+                    assert_eq!(row.pos.y, original.pos.y);
+                    assert!(aligned.rect.contains_rect(row.rect()));
+                    assert!(aligned.mesh_bounds.contains_rect(row.visuals.mesh_bounds.translate(row.pos.to_vec2())));
+                    assert!(((row.pos + offset) - expected.pos).length() * ppp < 1e-4);
+                    let pixel = (row.pos.x + offset.x) * ppp;
+                    assert!((pixel - pixel.round()).abs() < 1e-4);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn public_text_shape_uses_the_complete_logical_bound_for_rotation_anchors() {
+        let original = layout_text(MIXED, 1.5, Align::Min);
+        let expected = reading_space_reference(&original, 23.3, &ALIGNMENTS);
+        let result = mixed(original, 23.3);
+        let (galley, _, _) = parts(&result);
+        let origin = pos2(51.25, 37.5);
+        let angle = 0.73;
+        let rotation = egui::emath::Rot2::from_angle(angle);
+        for anchor in [egui::Align2::LEFT_TOP, egui::Align2::CENTER_CENTER, egui::Align2::RIGHT_BOTTOM] {
+            let pivot = origin + anchor.pos_in_rect(&expected.rect).to_vec2();
+            let shape = result.text_shape(origin, Color32::BLACK).with_angle_and_anchor(angle, anchor);
+            for (row, expected) in galley.rows.iter().zip(&expected.rows) {
+                for (corner, expected) in
+                    [(row.rect().left_top(), expected.rect().left_top()), (row.rect().right_bottom(), expected.rect().right_bottom())]
+                {
+                    let actual = shape.pos + rotation * corner.to_vec2();
+                    let expected = pivot + rotation * (origin + expected.to_vec2() - pivot);
+                    assert!((actual - expected).length() < 1e-4, "rotation must retain the independently computed logical anchor");
+                }
+            }
+            let corners = [
+                expected.mesh_bounds.left_top(),
+                expected.mesh_bounds.right_top(),
+                expected.mesh_bounds.right_bottom(),
+                expected.mesh_bounds.left_bottom(),
+            ];
+            let expected_ink = Rect::from_points(&corners.map(|p| pivot + rotation * (origin + p.to_vec2() - pivot)));
+            close_rect(shape.visual_bounding_rect(), expected_ink, 1e-4);
+        }
+    }
+
+    #[test]
+    fn painter_preserves_visible_vertices_at_fractional_origins_and_dpi() {
+        for ppp in [1.25, 1.5, 2.0] {
+            let (ctx, original) = layout_with_context(MIXED, ppp, Align::Min);
+            for width in [0.0, 23.3] {
+                let reference = reading_space_reference(&original, width, &ALIGNMENTS);
+                let aligned = mixed(original.clone(), width);
+                for rounding in [false, true] {
+                    ctx.tessellation_options_mut(|options| options.round_text_to_pixels = rounding);
+                    let options = ctx.tessellation_options(|options| *options);
+                    for origin in [pos2(37.25, 19.375), pos2(-11.5, 9.5), pos2(0.5 / ppp - 1e-5, 0.5 / ppp), pos2(0.5 / ppp + 1e-5, 0.5 / ppp)] {
+                        let output = ctx.run_ui(egui::RawInput::default(), |ui| aligned.clone().paint(ui.painter(), origin, Color32::BLACK));
+                        let shapes: Vec<_> = output
+                            .shapes
+                            .iter()
+                            .filter_map(|clipped| match &clipped.shape {
+                                egui::Shape::Text(shape) => Some(shape),
+                                _ => None,
+                            })
+                            .collect();
+                        assert_eq!(shapes.len(), 1, "the actual paint method must emit one text shape");
+                        let atlas_size = ctx.fonts(|fonts| fonts.image().size);
+                        let tessellate = |shape: &TextShape| {
+                            let mut tessellator = egui::epaint::Tessellator::new(ppp, options, atlas_size, Vec::new());
+                            let mut mesh = egui::epaint::Mesh::default();
+                            tessellator.tessellate_text(shape, &mut mesh);
+                            mesh
+                        };
+                        let actual = tessellate(shapes[0]);
+                        let expected = tessellate(&TextShape::new(origin, reference.clone(), Color32::BLACK));
+                        assert!(!expected.vertices.is_empty(), "real glyph ink must be tessellated");
+                        assert_eq!(actual.indices, expected.indices);
+                        assert_eq!(actual.vertices.len(), expected.vertices.len());
+                        for (actual, expected) in actual.vertices.iter().zip(&expected.vertices) {
+                            assert_eq!(actual.uv, expected.uv);
+                            assert_eq!(actual.color, expected.color);
+                            assert!(
+                                (actual.pos - expected.pos).length() * ppp < 1e-4,
+                                "the wrapper must not move ink to another physical pixel: {:?} != {:?}",
+                                actual.pos,
+                                expected.pos
+                            );
+                        }
+                        drop(shapes);
+                        output.drop_without_applying_deltas();
+                    }
+                }
+            }
+        }
     }
 }
