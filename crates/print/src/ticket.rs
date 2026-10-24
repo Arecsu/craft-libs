@@ -198,7 +198,8 @@ pub(crate) fn offered(capabilities_xml: &str) -> Offered {
             .flat_map(|f| f.children().filter(|n| n.has_tag_name((NS_PSF, "Option"))))
     };
     Offered {
-        duplex: Some(options("JobDuplexAllDocumentsContiguously").next().is_some()),
+        // The schema's two duplex features are alternatives; a driver offers one or the other.
+        duplex: Some(options("JobDuplexAllDocumentsContiguously").chain(options("DocumentDuplex")).next().is_some()),
         // A vendor's own option might be colour, so only the two schema keywords count as not.
         color: Some(options("PageOutputColor").any(|n| !named(n, "Monochrome") && !named(n, "Grayscale"))),
         collate: Some(options("DocumentCollate").any(|n| named(n, "Collated"))),
@@ -425,6 +426,10 @@ mod tests {
             r#"<psf:PrintCapabilities xmlns:psf="{NS_PSF}"><psf:Feature name="psk:JobDuplexAllDocumentsContiguously"/></psf:PrintCapabilities>"#
         );
         assert_eq!(super::offered(&empty).duplex, Some(false), "a feature with no option offers nothing");
+        let document_duplex = format!(
+            r#"<psf:PrintCapabilities xmlns:psf="{NS_PSF}" xmlns:psk="{NS_PSK}"><psf:Feature name="psk:DocumentDuplex"><psf:Option name="psk:OneSided"/><psf:Option name="psk:TwoSidedLongEdge"/></psf:Feature></psf:PrintCapabilities>"#
+        );
+        assert_eq!(super::offered(&document_duplex).duplex, Some(true), "DocumentDuplex is a duplex feature too");
 
         let one_sided = Job { duplex: Some(Duplex::Off), ..Job::default() };
         let two_sided = Job { duplex: Some(Duplex::LongEdge), ..Job::default() };
