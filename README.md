@@ -1,6 +1,8 @@
 Craft App Libraries
 ===================
 
+<a href="https://sonarcloud.io/project/overview?id=storytold_craft-libs"><img alt="Scanned by SonarCloud" src="https://img.shields.io/badge/Scanned_by-SonarCloud-4b9fd5?style=flat-square&logo=sonarqubecloud&logoColor=white"></a>
+
 This repo contains libraries used by the various Craft Apps. It's a Rust monorepo workspace, and the libraries can be included by any Craft Apps that need them.
 
 In the future this may grow to include non-Rust library code.
@@ -23,12 +25,35 @@ craft-<name> = { git = "https://github.com/storytold/craft-libs", rev = "<commit
 
 ## Libraries
 
+- [`craft-platform`](crates/platform/README.md): optional native dialog lifecycle, Linux/BSD desktop appearance observation and browser download ownership; application policy stays in the apps.
+
+- [`craft-ai-core`](crates/ai-core/README.md): the data model and contract for AI in the Craft Apps (connections, models, tools, requests, jobs, consent, history, route spec). Pure, no I/O, wasm-safe. Contract in [docs/ai-shared-layer.md](docs/ai-shared-layer.md).
 - [`craft-pdf`](crates/pdf/README.md): independently optional PDF parsing, interpretation, rasterization and guarded authoring. Apps retain layout, fonts, editing and export policy; writer-only consumers do not enable the shared reader.
 
 - [`craft-atomic`](crates/atomic/README.md): Crash-safe atomic file writing and replacement with same-directory staging, directory fsync, Apple `F_FULLFSYNC` fallback, transient lock backoff, and fault injection for the Craft suite.
 - [`craft-cms`](crates/cms/README.md): pure-Rust ICC v2/v4 colour management: profile parsing
   and writing, transforms, rendering intents, black point compensation, soft proofing, gamut
   checks, 3D LUTs and built-in profiles (sRGB, Display P3, synthetic coated CMYK and others).
+- [`craft-docpath`](crates/docpath/src/lib.rs): decides whether a path or `file:` URL stored in a
+  document may be opened. Paths stored in documents are followed only when they are local or on the
+  document's own network share; other network paths, device paths and non-file URLs are refused.
+- [`craft-fonts-build`](crates/fonts-build/README.md): embeds the optional craft-fonts faces
+  from an app's `build.rs` (`CRAFT_FONTS_DIR`, `CRAFT_FONTS_REQUIRED`, script filters) as a table
+  of `EmbeddedFace`s. No dependencies; the app picks the faces.
+- [`craft-i18n`](crates/i18n/README.md): translations over the embedded craft-i18n catalogs:
+  lookup with fallback (`pt-br` → `pt` → English), plurals, language names, the system locale and
+  a pseudo locale. The catalogs stay a fully optional build input; apps keep `tl!` and their
+  language setting.
+- [`craft-jpeg`](crates/jpeg/README.md): clean-room decoder for 12-bit and arithmetic-coded
+  JPEG (T.81 SOF0/SOF1 at 12 bits, SOF9, SOF10), from PhotoCraft, and a frame probe for routing.
+  Metadata stays in each app.
+- [`craft-keymap`](crates/keymap/README.md): keyboard bindings: chords and their text forms,
+  scopes, conflicts, user overrides stored through craft-settings and import of other
+  applications' shortcut sets. Command catalogs, file readers and the shortcut editor UI stay
+  in each app.
+- [`craft-media`](crates/media/README.md): bit-level I/O (`bitstream`), clean-room MP4/MOV
+  (`isobmff`) and Matroska/WebM (`matroska`) demuxers and muxers, from FilmCraft, and an ISO BMFF
+  box reader. Containers only; codecs stay in each app.
 - [`craft-print`](crates/print/README.md): PDF submission to CUPS and Windows, printer discovery,
   duplex/copies/colour and driver preferences. PDF generation stays in each app.
 
