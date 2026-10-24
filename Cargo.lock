@@ -826,6 +826,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-plate-test"
+version = "0.1.0"
+dependencies = [
+ "craft-cms",
+ "craft-pdf",
+ "hayro-syntax",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-platform"
 version = "0.1.0"
 dependencies = [
@@ -840,6 +852,15 @@ dependencies = [
  "wasm-bindgen-test",
  "web-sys",
  "zbus",
+]
+
+[[package]]
+name = "craft-prepress"
+version = "0.1.0"
+dependencies = [
+ "craft-cms",
+ "craft-pdf",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

@@ -806,11 +806,14 @@ Document the expected failure for each probe and keep it out of release acceptan
 
 ## 10. Performance protocol and thresholds
 
-### 10.1 Baseline capture (before production edits)
+### 10.1 Baseline capture and the implemented CPU harness
 
-The benchmark harness is test-only work and must exist in both baseline and candidate trees. Stage
-the harness in a separate test-only commit, cherry-pick it into a read-only baseline worktree at
-`49190884278f16c9a9f5823d7698a8ffb5deb062`, and run the baseline first.
+The harness is test-only work. Prepare separate baseline/control and candidate qualification
+worktrees with the same measured work, cases and instrumentation; record their exact commits,
+complete patches, harness/lock hashes and any reviewed API compatibility adapter. The original
+plan proposed `49190884278f16c9a9f5823d7698a8ffb5deb062` as a baseline; that ref alone does not
+qualify a comparison. Preserve the published source and existing control worktrees. Run correctness
+gates before measuring, then alternate paired baseline/candidate runs under the same conditions.
 
 Environment to record exactly:
 
@@ -822,20 +825,19 @@ Environment to record exactly:
 - no real-GPU measurement has been performed for this task. Hardware availability alone does not
   establish renderer, compositor or presentation acceptance.
 
-Benchmark target: `crates/ui/benches/ui_hotpaths.rs`, with Criterion as a
-craft-ui dev-dependency and a separate individual-frame timing mode:
+The implemented target is `crates/ui/examples/ui_hotpaths.rs`, a headless JSON-emitting example,
+not a Criterion bench target. It measures:
 
-- `tabs_fit`: 1, 8, 64 and 4096 tabs; `available` at tight/medium/wide; 1x and 2x.
-- `split_rect` and `resized`: 100k iterations, normal and tiny panes.
-- `fit_toolbar`: 8 and 4096 groups.
-- `dock_area`: 4-panel split+floating and 32-panel tree at 800x600 and 1440x900, 1x and 2x;
-  call `DockArea::show` with a no-op body, tessellate `FullOutput`, discard textures.
-- `printing`: lazy `refresh` plus `poll` with empty, pending and completed receivers; `show` at 220x360.
-- `panel_integration`: left panel + central `DockArea`.
-- `text_tessellation`: 120 fixed ASCII labels plus a mixed/color-glyph control,
-  time Context::tessellate separately against old fork, stock 0.37 and candidate.
-- `font_startup`: fresh-process font discovery and first-missing-glyph timing using
-  the explicit app/provider fixture; no installed-font-dependent pixel goldens.
+- pure `tabs_fit`, `split_rect`/`resized` and `fit_toolbar` cases across the encoded sizes/scales;
+- dock layouts with four split/floating panels or a 32-panel tree at 800×600 and 1440×900,
+  at 1× and 2×;
+- left-panel plus central-dock integration, with actual rendered bodies, geometry and interaction
+  checks. Frame timing includes `Context::run_ui` and `Context::tessellate` together.
+
+Printing receiver/poll lifecycle, separately timed text tessellation, fresh-process font discovery,
+GPU pipeline construction and native child/input behavior need their own evidence. They are not
+implemented measurements of this example. Texture deltas are counted, never uploaded; no window,
+GPU renderer, compositor, physical input or allocation-counting allocator runs here.
 
 Named cross-repository acceptance owners: egui fork section 10 owns fresh-process
 DX12 renderer/pipeline construction (#8736), and SoundCraft/PdfCraft Windows rows
@@ -845,25 +847,49 @@ parent/deferred-child fixture owns #8748; DesignCraft's native child-window scen
 provides the consumer evidence. Link actual results to CL-4, rather than claiming
 craft-libs' library harness independently validates native DX12 or child windows.
 
-Measure with Criterion, fixed sample size and warmup:
+Build and run the implemented example through the owning `task.py` resource, keeping its allocated
+target/source/evidence paths. Build separately from measurement so Cargo startup/compilation is not
+mistaken for executable RSS or wall time. For example, inside the parent's managed jobs:
 
 ```sh
-# through task.py, with the allocated target and evidence paths
-cargo bench -p craft-ui --bench ui_hotpaths --locked -- \
-  --warm-up-time 3 --measurement-time 10 --sample-size 100 --save-baseline base
+cargo build --release -p craft-ui --example ui_hotpaths --locked
+
+# Use a distinct durable output for each paired attempt; repeat in the candidate's own resource.
+# CARGO_TARGET_DIR is supplied by task.py, never overridden or shared across sources.
+CRAFT_UI_PERF_LABEL=baseline-attempt01 \
+CRAFT_UI_PERF_OUT=/absolute/task-evidence/baseline-attempt01-ui-hotpaths.json \
+"$CARGO_TARGET_DIR/release/examples/ui_hotpaths"
 ```
 
-Then run the candidate with `--baseline base`. Keep raw estimates JSON/CSV, not just the summary.
-Record Criterion estimates/confidence intervals and sample count, CPU affinity, `RUSTFLAGS`, profile, feature set,
-renderer, driver, DPI, viewport, font definitions and fixture fixture hash.
-For latency percentiles, collect individual operation/frame durations separately: Criterion's
-batch means are not a frame-tail distribution. Use at least 1,000 measured frames for p99.
+`CRAFT_UI_PERF_OUT` writes the pretty JSON report; unset it to emit JSON to stdout.
+`CRAFT_UI_PERF_LABEL` is copied into the report. Default fonts are egui's bundled definitions;
+optional `CRAFT_UI_PERF_FONT` supplies a pinned fixture file instead. Record its exact path and
+SHA256 externally. The report's `fonts.font_file` is a readable string (null when unset); non-UTF-8
+OS paths are displayed with replacement characters, so that display is not a lossless file identity.
+Actual file loading retains the OS path. Keep raw reports, stderr, source/lock/executable hashes,
+full argv/environment, Rust versions, feature set, CPU affinity and profile settings for both sides.
+The report's `build_profile` uses `debug_assertions` as a label: it does not independently prove
+optimization/LTO/codegen settings or account for environment profile overrides.
 
-Additional counters from `FullOutput` and `Context`:
-`shapes.len`, total vertices/indices, `textures_delta.set/free` count and bytes,
-`font atlas` growth, `ctx.fonts(|f| f.num_galleys_in_cache())`, and `requested_repaint_last_pass`.
-Peak RSS from `/usr/bin/time -v` or `/proc/self/status`. For allocation counts, use a test-only
-counting allocator around the closure; report both count and bytes.
+Schema 3 records the case matrix and raw arrays. Each case warms for at least 50 operations/frames
+and at least 3 seconds. Pure functions collect 50 mean-of-batch samples (16 iterations per sample,
+2,000 for split cases), plus 50 separate individual latencies; those individual micro latencies are
+diagnostic because timer overhead dominates sub-microsecond work. Mean-of-batch samples are not a
+frame-tail distribution. Dock/integration cases collect 1,000 individual frame durations with
+median/p95/p99 statistics. Bodies, geometry, interaction checks, shapes/vertices/indices and the
+64-bit mesh fingerprint come from the final measured frame; the fingerprint is not exact mesh or
+pixel identity. Texture/repaint counters aggregate measured frames, and the hover probe runs in a
+separate unmeasured frame. Galley counts are recorded after warmup and after measurement.
+
+Before comparing paired reports, require nonempty consistent case keys/counts, matching viewport,
+DPI, theme, font fixtures, features and instrumentation, and the intended reviewed dependency delta.
+Alternate repeated runs and retain every raw pair; this example neither produces Criterion confidence
+intervals nor automatically accepts regressions. Apply section 10.2's thresholds only to metrics the
+actual output supports, with noise and correctness checks. Other criteria (exact visual/mesh equality,
+allocation counts, a 10k-frame cache-growth run, printing/native behavior and GPU/upload timing) need
+separate fixtures or profiling. Measure peak RSS/wall time around the built executable with the
+parent's managed runner; they are not fields measured by this harness. A successful example run alone
+does not establish performance, native rendering or all-platform acceptance.
 
 ### 10.2 Thresholds
 

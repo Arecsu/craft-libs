@@ -1,10 +1,36 @@
 # Shared Hayro reader snapshot
 
 The `hayro`, `hayro-interpret`, `hayro-syntax` and `hayro-jbig2` directories are transferred
-from [PdfCraft revision 7437bde378f43856eada40af25b983812e615e8a](https://github.com/storytold/pdfcraft/tree/7437bde378f43856eada40af25b983812e615e8a/vendor).
-The upstream [patch ledger](https://github.com/storytold/pdfcraft/blob/7437bde378f43856eada40af25b983812e615e8a/vendor/README.md)
+from [PdfCraft revision ec0a965074f376a5bf610435948e4e5184bf3299](https://github.com/storytold/pdfcraft/tree/ec0a965074f376a5bf610435948e4e5184bf3299/vendor)
+(`main`, 2026-10-19). The upstream [patch ledger](https://github.com/storytold/pdfcraft/blob/ec0a965074f376a5bf610435948e4e5184bf3299/vendor/README.md)
 describes the inherited patches. Source manifests record every transferred Git blob and
 SHA-256 alongside the local hash. The source manifests themselves are not self-hashed.
+
+The first transfer was from PdfCraft revision 7437bde378f43856eada40af25b983812e615e8a.
+The snapshot was then re-synced to ec0a965 by a three-way merge (base 7437bde, PdfCraft's
+current tree, this tree), so every local patch described below is carried unchanged. The
+re-sync brings these PdfCraft changes:
+
+| PdfCraft PR | Crate | Change |
+|---|---|---|
+| #1691 | hayro-interpret | Patch 28: images with few possible pixel values convert each value once (spot-color images) |
+| #1903, #3316 | hayro-syntax | CCITT images that declare `/Rows 0`, or fewer `/Rows` than `/Height`, decode to their height |
+| #1954 | hayro-syntax | ASCII85 decoding stops at the stream's decode limit (here the per-document limit) |
+| #1982 | hayro-syntax | `Page::base_dimensions` keeps a one-point floor after `/UserUnit` |
+| #2027 | hayro-interpret | Reads a transparency group's `/I` and `/K`; a group that is neither isolated nor knockout composites directly onto its backdrop |
+| #2132 | hayro | A soft mask fades a gradient fill |
+| #1557 | hayro-interpret, hayro | Patch 29: devices are told where annotation drawing begins and ends |
+| 13e3154 | hayro-interpret | Annex D.2 alias codes in standard, TrueType, Type 1 and Type 3 fonts read as the glyphs they draw |
+| #2436 | hayro-interpret | Patches 31–33: faster sampled functions, image decodes reused across zoom levels, patch meshes interpolated once per grid point |
+| #2812 | hayro-interpret | Patch 34: a per-thread tint-transform counter for deterministic tests |
+| #2035 | hayro-syntax | Flate back-references are copied in runs |
+| #3356 | hayro | A tiling pattern drawn once shows its cell at full scale |
+| #3378 | hayro-syntax | Patch 20: spaces or tabs between `stream` and its line break are accepted |
+| #3363 | hayro-syntax | A JP2 image in a color space the decoder refuses is drawn by its component count |
+| #3412 | hayro-interpret | Type 3 glyph bounding boxes are transformed to device space before shading bounds are intersected |
+
+PdfCraft's vendored `vello_common` patch (clip-intersection performance) is not part of this
+reader snapshot.
 
 `hayro-cmap` 0.1.0 is transferred from [PdfCraft revision a2ec27b4775f53c40cad3456936d9406611e3a8d](https://github.com/storytold/pdfcraft/tree/a2ec27b4775f53c40cad3456936d9406611e3a8d/vendor/hayro-cmap)
 with its malformed-CMap patch (PdfCraft #3177): bad `bfchar` or `bfrange` entries, an
@@ -24,6 +50,40 @@ stack. Tests: `object::tests::long_open_dict_run_does_not_overflow`,
 and `object::tests::nested_dict_delimiters_are_skipped`. Its `SOURCE.json` records the
 registry hashes. Consuming workspaces need a `hayro-postscript` patch entry beside the other
 Hayro entries.
+
+Changes ported from PdfCraft pull requests that were open when they were ported, under the
+same MIT OR Apache-2.0 license. Code comments keep the pull request's patch numbers, except
+where noted below.
+
+| PdfCraft PR | Author | Source commit | Files | Change |
+|---|---|---|---|---|
+| [#2770](https://github.com/storytold/pdfcraft/pull/2770) | Guillem Hermida (guillehr2) | [6fcf2a4](https://github.com/guillehr2/pdfcraft/commit/6fcf2a4aca29e943e28cb69017ff8f87d00656c6) | hayro-interpret `color.rs`, `interpret/mod.rs`, `interpret/path.rs`, `interpret/state.rs`, `pattern.rs`, `shading.rs`, `soft_mask.rs`, `x_object.rs` | Patches 35 and 36, plate mode: `InterpreterSettings::plate` draws one ink's separation as a gray film (`color::Plate`, `ColorSpace::ink_use`/`ink_tint`); the graphics state reads `OP`, `op` and `OPM` and an overprinting paint that doesn't specify the plate's ink leaves the plate as it is (ISO 32000-2 §8.6.7); `InterpreterSettings::ink_sink` reports spot inks; `color::CmykSimulation` converts process color to an output intent's CMYK. Only the vendored interpreter part is ported; PdfCraft's `separations.rs` and Output Preview UI are not |
+| [#2974](https://github.com/storytold/pdfcraft/pull/2974) | mtlcl410 | [bae6981](https://github.com/mtlcl410/pdfcraft/commit/bae69819594a6385a027fec1f67e6b3c36c259b4) | hayro-interpret `device.rs`, `x_object.rs`; hayro `renderer.rs` | Knockout groups (`/K true`) knock out: while one is innermost, fills, strokes, glyph outlines and shadings are drawn with `Compose::Copy` (weighted by coverage); an unmasked image's rectangle (`Device::knockout_image`) and a nested group's shape (an erase pass between `Device::begin_knockout_erase` and `end_knockout_erase`) are cleared before their layer composites; a transparency group drawn in a knockout group always gets a layer of its own. Masked images and stencils composite as before |
+
+Code comments label #2974's changes `Knockout patch (pdfcraft #2974)` instead of a number: the
+pull request numbers them hayro-interpret patch 39 and hayro patch 19, and PdfCraft may
+renumber them when it merges. `crates/pdf/tests/knockout.rs` adapts its test; a plate-mode
+test in `crates/pdf/tests/plates.rs` checks that a knockout group separates with only the top
+object where two objects overlap. The erase pass resolves the group's resources with
+`Resources::from_scope`, as the group's own draw does in this tree.
+
+A craft-libs patch, labeled `Craft patch (CMYK masks)` in code comments,
+takes a luminosity soft mask whose group is DeviceCMYK from the group's inks: ISO 32000-2
+§11.6.5.2 and §10.4.2.2 give `1 - min(1, 0.3c + 0.59m + 0.11y + k)`, where the colors as
+drawn through the CMYK profile leave K 100% at about a tenth. hayro's `renderer.rs` draws
+the group's four process plates over the backdrop's film (`SoftMask::plate`,
+`SoftMask::interpret_plate`, `Plate::tint`) and applies the formula. On those plates spot
+colorants paint through their alternate space (`Plate::spots_as_process`) and nothing
+overprints. Masks in other color spaces are unchanged. A test in
+`crates/pdf/tests/plates.rs` checks process, spot, RGB and backdrop colors.
+
+The output-intent conversion of patch 36 goes through a `color::CmykConversion` trait, so
+that callers can convert with their own color management. `CmykSimulation::new` keeps
+#2770's moxcms conversion as the default, and `CmykSimulation::with_conversion` takes a
+caller's. Lab and ICCBased colors reach the conversion as CIE XYZ relative to the D50 PCS
+white (`color::PCS_WHITE`); the moxcms conversion takes them on through #2770's ProPhoto hub.
+`crates/pdf/tests/plates.rs` adapts #2770's plate tests to the raster path, with its
+synthetic ICC profiles in `crates/pdf/tests/support/synthetic_icc.rs`.
 
 The shared snapshot adds immutable per-document ordinary decode limits, threaded through
 initial xrefs, object streams, fallback and repair. Existing constructors retain their
@@ -88,32 +148,32 @@ Hostile-input bounds (CodeRabbit findings):
   still stops where the data ends.
 
 Reader limits from the [PdfCraft revision a2ec27b4775f53c40cad3456936d9406611e3a8d ledger](https://github.com/storytold/pdfcraft/blob/a2ec27b4775f53c40cad3456936d9406611e3a8d/vendor/README.md),
-by its item ids: hayro-interpret (31), its overflow part: the largest 32-bit Type 0 sample is
-computed in 64 bits instead of overflowing `2_u32.pow(32)`. The flat sample array that (31)
-also brings is a performance change and is not part of this set. hayro-syntax (7), (22) and
-(25) are covered by the local bounds above: ASCII85 output stops at the decode limit,
-object-stream indexes are parsed once with checked offsets, and direct objects nest at most
-64 levels, stricter than PdfCraft's 128. Test:
+by its item ids: hayro-interpret (31) comes with the ec0a965 re-sync (patches 31–33 above):
+its flat sample array computes the largest 32-bit Type 0 sample in 64 bits instead of
+overflowing `2_u32.pow(32)`. hayro-syntax (7), (22) and (25) are covered by the local bounds
+above: ASCII85 output stops at the decode limit, object-stream indexes are parsed once with
+checked offsets, and direct objects nest at most 64 levels, stricter than PdfCraft's 128. Test:
 `function::type0::tests::thirty_two_bit_samples_do_not_overflow`.
 
-Rendering fixes from the same [PdfCraft revision a2ec27b4775f53c40cad3456936d9406611e3a8d ledger](https://github.com/storytold/pdfcraft/blob/a2ec27b4775f53c40cad3456936d9406611e3a8d/vendor/README.md),
-by its item ids, each marked `PdfCraft patch` in the source: hayro-syntax (17) and (19), CCITT
-`/Rows 0` or fewer `/Rows` than `/Height` decode to the image height; (20), spaces or tabs
-between `stream` and its line break; the `EI` extension of (4), `EI` followed by a delimiter
-ends an inline image; (23), bytes above 0x7F after an `EI` candidate don't reject it; the
-unledgered #3565 fix, a doubled sign (`--280`) is one number in both read and skip, beside the
-local zero-tolerance sign tokens; and the `base_dimensions` one-point floor after `/UserUnit`.
-Their unit tests come with them; the CCITT raster tests are adapted in `tests/upstream_raster.rs`.
-Text fixes from the same ledger in hayro-interpret: (30), the Annex D.2 alias codes (WinAnsi
-0xA0 and 0xAD, MacRoman 0xCA) read as an ordinary space and hyphen unless `/Differences` names
-them; (44), a `/ToUnicode /Identity-H` or `/Identity-V` name reads two-byte codes as Unicode;
-(P6), glyph names outside the Adobe Glyph List (`f_i`, `hyphen.case`, `uniXXXXXXXX`) read by
-the glyph list specification's full mapping; (P8), a substitute without a spacing character
-draws its ordinary space; (P2), a Type 3 glyph's `/FontBBox` is taken to device space before it
-bounds the glyph's clip and shadings; and the extension of (26), comma-below letters (ș ț ķ ļ ņ
-ŗ Ģ) in the standard-font stand-ins are built from the font's comma. The text contracts are
-adapted in `tests/upstream_text.rs` and the Type 3 and comma-below raster tests in
-`tests/upstream_raster.rs`. (P8)'s PdfCraft test needs a Japanese substitute font and is not
+Fixes from the same [PdfCraft revision a2ec27b4775f53c40cad3456936d9406611e3a8d ledger](https://github.com/storytold/pdfcraft/blob/a2ec27b4775f53c40cad3456936d9406611e3a8d/vendor/README.md),
+by its item ids, each marked `PdfCraft patch` in the source. The ec0a965 re-sync brings
+hayro-syntax (17) and (19), CCITT `/Rows 0` or fewer `/Rows` than `/Height` decode to the
+image height; (20), spaces or tabs between `stream` and its line break; the `base_dimensions`
+one-point floor after `/UserUnit`; and in hayro-interpret (30), the Annex D.2 alias codes
+(WinAnsi 0xA0 and 0xAD, MacRoman 0xCA) read as an ordinary space and hyphen unless
+`/Differences` names them, and (P2), a Type 3 glyph's `/FontBBox` is taken to device space
+before it bounds the glyph's clip and shadings. Ported from the ledger on top of it: in
+hayro-syntax, the `EI` extension of (4), `EI` followed by a delimiter ends an inline image;
+(23), bytes above 0x7F after an `EI` candidate don't reject it; the unledgered #3565 fix, a
+doubled sign (`--280`) is one number in both read and skip, beside the local zero-tolerance
+sign tokens; in hayro-interpret, (44), a `/ToUnicode /Identity-H` or `/Identity-V` name reads
+two-byte codes as Unicode; (P6), glyph names outside the Adobe Glyph List (`f_i`,
+`hyphen.case`, `uniXXXXXXXX`) read by the glyph list specification's full mapping; (P8), a
+substitute without a spacing character draws its ordinary space; and the extension of (26),
+comma-below letters (ș ț ķ ļ ņ ŗ Ģ) in the standard-font stand-ins are built from the font's
+comma. The unit tests of all these items come with them; the CCITT, Type 3 and comma-below
+raster tests are adapted in `tests/upstream_raster.rs` and the text contracts in
+`tests/upstream_text.rs`. (P8)'s PdfCraft test needs a Japanese substitute font and is not
 ported.
 
 This remains the patched 0.7 backend. It retains the existing Bradford Lab conversion,

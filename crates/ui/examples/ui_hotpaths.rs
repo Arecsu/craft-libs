@@ -159,7 +159,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             "Bodies, geometry, interactions and the mesh fingerprint come from the final measured frame; the hover probe is a separate unmeasured frame.",
         ],
         "minimum_warmups": WARMUPS, "minimum_warmup_ns": MIN_WARMUP.as_nanos(), "micro_samples": MICRO_SAMPLES, "micro_batch": MICRO_BATCH, "frame_samples": FRAME_SAMPLES,
-        "fonts": {"source": font_source(), "font_file": env::var_os("CRAFT_UI_PERF_FONT"), "font_names": font_names,
+        "fonts": {"source": font_source(), "font_file": env::var_os("CRAFT_UI_PERF_FONT").map(|path| path.to_string_lossy().into_owned()), "font_names": font_names,
             "families": fonts.families.iter().map(|(family, names)| (format!("{family:?}"), names)).collect::<BTreeMap<_, _>>()},
         "micro": micro, "dock": dock, "panel_integration": integration,
         "case_counts": case_counts,
