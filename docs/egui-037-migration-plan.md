@@ -1,23 +1,12 @@
 # egui 0.37 migration plan for craft-libs
 
-Status: local implementation and immutable dependency preparation, 2026-10-24. Reconciled on merged
-PR 199 (`3832c47ef68a0e6214f2c1e85f3526b6adcb686e`). Screenshot completion and read-only text
-alignment helpers, regression coverage and the headless performance harness are implemented.
-The root manifest and lock select the reviewed egui fork
-`173cc7375d35dc5fbc5b5d0994fdf787f547c5d1` and winit fork
-`ae48c756a3b81125eb796c0cc6dccf60990d1181` using canonical GitHub URLs.
+Status: final landing integration, 2026-10-25. The reviewed shared UI includes screenshot completion, shaped-text alignment, keymap support and regression coverage. The manifest and lock select egui `6d518fc799681571963842f95b55a6b68431b15a` and winit `a517b3846ee8457d84ee4975110bfda6797c44dc` through canonical GitHub URLs.
 
-Current checks: canonical lock/source audit passed; all 118 craft-ui tests passed (112 unit,
-1 docking and 5 visual tests), strict craft-ui all-target clippy passed, and workspace formatting
-passed after applying rustfmt. These are local mirror and package checks. Full workspace tests
-and clippy, platform/native acceptance, accepted comparative performance measurements and a clean
-remote fetch after approved publication remain separate gates. The harness is not a performance
-acceptance result.
+The integration of migration ancestor `25da1314d443171b4adeaad2cd9454b273f35c6f` with main `2ab6049d9031bc8fae7f7df669b5fccaf5b9966f` passed formatting, strict workspace all-target clippy, workspace tests and the PDF all-feature suite in managed job `egui037-craft-libs-current-main-gates-20261024-2021`. Source and lock hashes were checked against that job before the local integration checkpoint.
 
-No publication approval exists. Every future push or new pull request needs explicit human review
-of the exact commit range and validation first. The baseline tables and detailed work plan below
-retain the 2026-10-22 planning snapshot for provenance; this current-status record supersedes their
-statements about pending implementation and the old PR 199 conflict.
+New main `6e7f28518dd1cb57e1624bdc269c3c14316b13ae` adds docking, native floating windows and other shared-library changes. Its integration is separately planned and reviewed; its compiled, runtime and performance checks remain pending. Earlier test counts below are historical snapshots, not acceptance for that newer tree. App-pinned migration ancestors remain reachable. The prepared benchmark protocol has no accepted timing result; the completed egui text benchmark remains separately inconclusive.
+
+Every push or new PR requires approval of its exact commit range and validation. Human review and merge are required. The baseline tables below preserve the original planning record.
 
 This plan covers only `storytold/craft-libs`. It records the shared-library work needed before the
 Craft applications move to the egui 0.37 family. Application-specific UI migrations, their document
@@ -323,15 +312,20 @@ it is not authorized or required by the git-based suite migration.
 The only vendored packages are PDF readers/writer, not egui:
 
 - `vendor/krilla` (0.8.2), `vendor/hayro` (0.7.1), `vendor/hayro-interpret` (0.7.0),
-  `vendor/hayro-syntax` (0.7.2) and `vendor/hayro-jbig2` (0.3.0).
-- Provenance and patch ledger: `vendor/README.craft-reader.md`, transferred from PdfCraft
-  `7437bde378f43856eada40af25b983812e615e8a`; each source manifest records blob and SHA-256.
+  `vendor/hayro-syntax` (0.7.2), `vendor/hayro-jbig2` (0.3.0), `vendor/hayro-cmap` (0.1.0)
+  and `vendor/hayro-postscript` (0.1.0).
+- Reader provenance and patch ledger: `vendor/README.craft-reader.md`. The first reader transfer
+  was from PdfCraft `7437bde378f43856eada40af25b983812e615e8a`; the ledger records subsequent
+  transfers and fixes. Writer provenance and patches are recorded separately in
+  `vendor/krilla/README.craft.md`. Each source manifest records the relevant source hashes.
 - Equivalence decision: keep the 0.7 backend and its documented compatibility patches. They are not
-  replaced by the egui migration. Do not update, rebase, delete or re-vendor them as part of this
-  work.
+  replaced by the egui migration. When reconciling current main, preserve its reader/writer fixes
+  and provenance byte-for-byte; do not independently re-vendor or remove them.
 - Removal/test condition: only a separate PDF backend migration may change them; their existing
   `cargo test -p craft-pdf --all-features` and `scripts/test-pdf-backends.sh` evidence remain the
-  gate. The root `[patch.crates-io]` must keep these entries while `craft-pdf` uses them.
+  gate. Run these checks again after a main reconciliation changes the vendors; default-feature
+  workspace tests alone do not qualify the PDF backend. The root `[patch.crates-io]` must keep
+  these entries while `craft-pdf` uses them.
 
 `crates/pdf/read-only-contract` is a nested workspace with its own `Cargo.lock` and a single
 `hayro-syntax` patch. It does not depend on egui and is unaffected by the workspace egui lock; do not

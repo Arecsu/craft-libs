@@ -22,6 +22,7 @@ itself omits those texts. Its examples and four CC0 ICC profiles are retained wi
 | `patches/10-mesh-gradients.patch` | Mesh gradients | `content.rs`, `error.rs`, `graphics/{mask,paint,shading_function}.rs`, `serialize.rs`, `surface.rs` |
 | `patches/11-png-decode-cap.patch` | PNG decode cap | `graphics/image.rs` |
 | `patches/12-optional-content.patch` | Optional content | `chunk_container.rs`, `configure/{PDF_A1,PDF_A2,PDF_A4,PDF_UA1}.md`, `configure/validate.rs`, `content.rs`, `error.rs`, `graphics/{mod,optional_content}.rs`, `lib.rs`, `resource.rs`, `serialize.rs`, `surface.rs` |
+| `patches/13-annotation-bounds.patch` | Annotation and destination bounds | `error.rs`, `interactive/{annotation,destination}.rs`, `page.rs`, `serialize.rs` |
 
 Each patch applies with `patch -p1` from this directory, in numeric order, to the pristine
 crate. `SOURCE.json` records, for every retained file, the upstream hash (`upstream_sha256`)
@@ -336,3 +337,22 @@ get small hooks.
 `CRAFT_OPTIONAL_CONTENT` marks the patch; craft-pdf requires it at compile time.
 
 Tests: `crates/pdf/tests/optional_content.rs`.
+
+## 13: annotation and destination bounds
+
+Upstream panics on link geometry that has no finite place on the page, which aborts a WASM
+app. `Document::finish` returns an error instead and writes nothing for the object:
+
+| Input | Upstream | Error |
+|---|---|---|
+| `LinkAnnotation::new_with_quad_points` with no quads, a non-finite point, or a bounding box whose width or height overflows | `assert!` or `unwrap` | `InvalidAnnotationGeometry(location)` |
+| A link rect or quad bounding box that overflows when flipped into PDF coordinates (`page_height - y`) | `unwrap` | `InvalidAnnotationGeometry(location)` |
+| A media, crop, bleed, trim or art box that overflows the same way | `unwrap` | `InvalidPageBox(page_index)` |
+| An `XyzDestination` page index past the last page | `panic!` | `InvalidDestination(page_index)` |
+| An `XyzDestination` point that maps to a non-finite coordinate | writes `inf` or `NaN` | `InvalidDestination(page_index)` |
+
+The constructors keep their signatures: `LinkAnnotation` holds an `Option<Rect>` and the check
+runs at serialization, before the annotation object starts. Refusing a single annotation
+instead of skipping it keeps the indices of tagged annotations in the structure tree valid.
+
+Tests: `crates/pdf/tests/link_annotations.rs`.
