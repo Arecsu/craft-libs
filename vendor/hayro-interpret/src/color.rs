@@ -2073,8 +2073,8 @@ impl ColorSpace {
     }
 
     /// PdfCraft patch (35): DeviceCMYK itself (`CalCMYK` reads as it too), where the nonzero
-    /// overprint mode applies.
-    pub(crate) fn is_device_cmyk(&self) -> bool {
+    /// overprint mode applies. Craft patch (flatten): public.
+    pub fn is_device_cmyk(&self) -> bool {
         matches!(self.0.as_ref(), ColorSpaceType::DeviceCmyk)
     }
 
@@ -2537,6 +2537,299 @@ pub(crate) trait ToRgb {
             output[2],
             (opacity * 255.0 + 0.5) as u8,
         ))
+    }
+}
+
+/// Craft patch (flatten): the inks a colour paints, for devices that keep colours as inks
+/// instead of RGB (see [`Color::ink_paint`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum InkPaint {
+    /// Tints `0.0..=1.0` of the listed inks; other inks are unspecified. Process colour lists
+    /// all four process inks.
+    Tints(Vec<(Ink, f32)>),
+    /// The same tint on every plate (the `All` colorant).
+    All(f32),
+    /// No ink (the `None` colorant).
+    None,
+}
+
+/// Craft patch (flatten): how a spot ink looks at 100%, from its colour space's alternate.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SpotAlternate {
+    /// The alternate space is DeviceCMYK: the tint transform's CMYK.
+    Cmyk([f32; 4]),
+    /// Any other alternate space: the sRGB appearance.
+    Srgb([u8; 3]),
+}
+
+impl Color {
+    /// Craft patch (flatten): the opacity (`ca` or `CA`) the colour paints with.
+    pub fn opacity(&self) -> f32 {
+        self.opacity
+    }
+
+    /// Craft patch (flatten): whether the colour was set in DeviceCMYK itself, where the
+    /// nonzero overprint mode applies (ISO 32000-2 §8.6.7).
+    pub fn is_device_cmyk(&self) -> bool {
+        self.color_space.is_device_cmyk()
+    }
+
+    /// Craft patch (flatten): the inks the colour paints, as plate mode separates it:
+    /// `Separation` and `DeviceN` colorants as they are, and process colour as CMYK, converted
+    /// through `simulation` where plate mode converts it. `None` for a pattern space.
+    pub fn ink_paint(&self, simulation: Option<&CmykSimulation>) -> Option<InkPaint> {
+        self.color_space
+            .ink_paint(&self.components, simulation, false)
+    }
+
+    /// Craft patch (flatten): how spot `ink` of this colour's space looks at 100%; `None` when
+    /// the space doesn't name it.
+    pub fn spot_alternate(&self, ink: &Ink) -> Option<SpotAlternate> {
+        self.color_space.spot_alternate(ink)
+    }
+}
+
+impl ColorSpace {
+    /// Craft patch (flatten): see [`Color::ink_paint`].
+    fn ink_paint(
+        &self,
+        components: &[f32],
+        simulation: Option<&CmykSimulation>,
+        manual_scale: bool,
+    ) -> Option<InkPaint> {
+        let get = |k: usize| unit(components.get(k).copied().unwrap_or(0.0));
+        Some(match self.0.as_ref() {
+            ColorSpaceType::Separation(s) => match &s.colorant {
+                Colorant::None => InkPaint::None,
+                Colorant::All => InkPaint::All(get(0)),
+                Colorant::Ink(ink) => InkPaint::Tints(vec![(ink.clone(), get(0))]),
+            },
+            ColorSpaceType::DeviceN(d) => {
+                let tints: Vec<_> = d
+                    .colorants
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(k, c)| match c {
+                        Colorant::Ink(ink) => Some((ink.clone(), get(k))),
+                        _ => None,
+                    })
+                    .collect();
+                if d.is_none || tints.is_empty() {
+                    InkPaint::None
+                } else {
+                    InkPaint::Tints(tints)
+                }
+            }
+            ColorSpaceType::Indexed(i) => {
+                let index = components.first().copied().unwrap_or(0.0);
+                let index = (clamp_component(index, 0.0, f32::from(i.hival)) + 0.5) as usize;
+                return i.base.ink_paint(i.values.get(index)?, simulation, true);
+            }
+            ColorSpaceType::Pattern(_) => return None,
+            ColorSpaceType::Plate(p) => {
+                return p.inner.ink_paint(components, simulation, manual_scale);
+            }
+            _ => {
+                let cmyk = self.process_cmyk(components, simulation, manual_scale)?;
+                InkPaint::Tints(Ink::PROCESS.into_iter().zip(cmyk).collect())
+            }
+        })
+    }
+
+    /// Craft patch (flatten): see [`Color::spot_alternate`].
+    pub fn spot_alternate(&self, ink: &Ink) -> Option<SpotAlternate> {
+        let (alternate, transform, components) = match self.0.as_ref() {
+            ColorSpaceType::Separation(s) => {
+                if s.colorant != Colorant::Ink(ink.clone()) {
+                    return None;
+                }
+                (&s.alternate_space, &s.tint_transform, smallvec![1.0])
+            }
+            ColorSpaceType::DeviceN(d) => {
+                let k = d
+                    .colorants
+                    .iter()
+                    .position(|c| matches!(c, Colorant::Ink(i) if i == ink))?;
+                let mut components: ColorComponents = smallvec![0.0; d.colorants.len()];
+                *components.get_mut(k)? = 1.0;
+                (&d.alternate_space, &d.tint_transform, components)
+            }
+            ColorSpaceType::Indexed(i) => return i.base.spot_alternate(ink),
+            ColorSpaceType::Pattern(cs) => return cs.spot_alternate(ink),
+            ColorSpaceType::Plate(p) => return p.inner.spot_alternate(ink),
+            _ => return None,
+        };
+        if alternate.is_device_cmyk()
+            && let Some(cmyk) = transform.eval(components.clone())
+            && let [c, m, y, k] = cmyk[..]
+        {
+            return Some(SpotAlternate::Cmyk([c, m, y, k].map(unit)));
+        }
+        Some(SpotAlternate::Srgb(self.appearance(&components)))
+    }
+}
+
+/// Craft patch (flatten): the components a device that keeps colours as inks stores a space's
+/// colours in, as plate mode separates them (see [`ColorSpace::ink_values`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum InkSpace {
+    /// DeviceGray: one gray level, 1 = white.
+    Gray,
+    /// The four process tints. `converted` when the colours are converted into CMYK (RGB, Lab,
+    /// CIE-based and ICC spaces other than a CMYK profile the simulation leaves as it is).
+    Cmyk {
+        /// Whether the colours are converted into CMYK.
+        converted: bool,
+    },
+    /// Tints of these inks: `Separation` and `DeviceN` colorants, `None` colorants left out.
+    Inks(Vec<Ink>),
+    /// One tint for every ink (the `All` colorant).
+    All,
+    /// No ink (the `None` colorant, or a pattern space).
+    None,
+}
+
+impl InkSpace {
+    /// Values per colour.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Gray | Self::All => 1,
+            Self::Cmyk { .. } => 4,
+            Self::Inks(inks) => inks.len(),
+            Self::None => 0,
+        }
+    }
+
+    /// Whether colours have no values (the space paints nothing).
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl ColorSpace {
+    /// Craft patch (flatten): the components per colour.
+    pub fn components(&self) -> usize {
+        usize::from(self.num_components())
+    }
+
+    /// Craft patch (flatten): how [`Self::ink_values`] stores this space's colours. An Indexed
+    /// space stores its base space's.
+    pub fn ink_space(&self, simulation: Option<&CmykSimulation>) -> InkSpace {
+        match self.0.as_ref() {
+            ColorSpaceType::DeviceGray => InkSpace::Gray,
+            ColorSpaceType::DeviceCmyk => InkSpace::Cmyk { converted: false },
+            ColorSpaceType::ICCBased(icc) if icc.0.number_components == 4 => InkSpace::Cmyk {
+                converted: simulation.is_some_and(|s| self.simulated_by(s)),
+            },
+            ColorSpaceType::Indexed(i) => i.base.ink_space(simulation),
+            ColorSpaceType::Separation(s) => match &s.colorant {
+                Colorant::Ink(ink) => InkSpace::Inks(vec![ink.clone()]),
+                Colorant::All => InkSpace::All,
+                Colorant::None => InkSpace::None,
+            },
+            ColorSpaceType::DeviceN(d) => {
+                let inks: Vec<Ink> = d
+                    .colorants
+                    .iter()
+                    .filter_map(|c| match c {
+                        Colorant::Ink(ink) => Some(ink.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if d.is_none || inks.is_empty() {
+                    InkSpace::None
+                } else {
+                    InkSpace::Inks(inks)
+                }
+            }
+            ColorSpaceType::Pattern(_) => InkSpace::None,
+            ColorSpaceType::Plate(p) => p.inner.ink_space(simulation),
+            _ => InkSpace::Cmyk { converted: true },
+        }
+    }
+
+    /// Craft patch (flatten): the colours `colors` (whole colours of [`Self::components`]
+    /// values each) appended to `out` as [`Self::ink_space`] values, `0.0..=1.0`. Process
+    /// colour converts as [`Color::ink_paint`] does, in batches.
+    pub fn ink_values(&self, colors: &[f32], simulation: Option<&CmykSimulation>, out: &mut Vec<f32>) {
+        self.ink_values_scaled(colors, simulation, false, out);
+    }
+
+    fn ink_values_scaled(
+        &self,
+        colors: &[f32],
+        simulation: Option<&CmykSimulation>,
+        manual_scale: bool,
+        out: &mut Vec<f32>,
+    ) {
+        let n = usize::from(self.num_components()).max(1);
+        let colors = &colors[..colors.len() / n * n];
+        match self.0.as_ref() {
+            ColorSpaceType::Indexed(i) => {
+                let width = i.base.ink_space(simulation).len();
+                let mut table = Vec::with_capacity((usize::from(i.hival) + 1) * width);
+                for values in &i.values {
+                    let start = table.len();
+                    i.base.ink_values_scaled(values, simulation, true, &mut table);
+                    table.resize(start + width, 0.0);
+                }
+                for index in colors {
+                    let index = (clamp_component(*index, 0.0, f32::from(i.hival)) + 0.5) as usize;
+                    match table.get(index * width..(index + 1) * width) {
+                        Some(values) => out.extend_from_slice(values),
+                        None => out.extend(std::iter::repeat_n(0.0, width)),
+                    }
+                }
+            }
+            ColorSpaceType::Plate(p) => p.inner.ink_values_scaled(colors, simulation, manual_scale, out),
+            ColorSpaceType::Pattern(_) => {}
+            ColorSpaceType::DeviceGray => out.extend(colors.iter().map(|v| unit(*v))),
+            ColorSpaceType::Separation(s) => {
+                if s.colorant != Colorant::None {
+                    out.extend(colors.iter().map(|v| unit(*v)));
+                }
+            }
+            ColorSpaceType::DeviceN(d) => {
+                if d.is_none {
+                    return;
+                }
+                for colour in colors.chunks_exact(n) {
+                    for (c, v) in d.colorants.iter().zip(colour) {
+                        if matches!(c, Colorant::Ink(_)) {
+                            out.push(unit(*v));
+                        }
+                    }
+                }
+            }
+            _ => {
+                let start = out.len();
+                out.resize(start + colors.len() / n * 4, 0.0);
+                if let Some(simulation) = simulation.filter(|s| self.simulated_by(s))
+                    && self
+                        .simulate_cmyk(simulation, colors, manual_scale, &mut out[start..])
+                        .is_some()
+                {
+                    for v in &mut out[start..] {
+                        *v = unit(*v);
+                    }
+                    return;
+                }
+                if self.separates_through_srgb() {
+                    let mut rgb = vec![0_u8; colors.len() / n * 3];
+                    if self.convert_f32(colors, &mut rgb, manual_scale).is_some() {
+                        for (cmyk, rgb) in out[start..].chunks_exact_mut(4).zip(rgb.chunks_exact(3)) {
+                            cmyk.copy_from_slice(&rgb_to_cmyk([rgb[0], rgb[1], rgb[2]].map(u8_to_f32)));
+                        }
+                        return;
+                    }
+                }
+                for (cmyk, colour) in out[start..].chunks_exact_mut(4).zip(colors.chunks_exact(n)) {
+                    if let Some(c) = self.process_cmyk(colour, None, manual_scale) {
+                        cmyk.copy_from_slice(&c);
+                    }
+                }
+            }
+        }
     }
 }
 

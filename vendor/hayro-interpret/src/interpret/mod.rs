@@ -874,7 +874,10 @@ fn interpret_window<'a>(
                             &defaults,
                         )
                     })
-                    .map(|s| {
+                    .map(|mut s| {
+                        // Craft patch (flatten): `sh` ignores `/Background` (ISO 32000-2
+                        // §8.7.4.5.1); only a shading pattern paints it.
+                        s.background = None;
                         Pattern::Shading(ShadingPattern {
                             shading: Arc::new(s),
                             matrix: Affine::IDENTITY,

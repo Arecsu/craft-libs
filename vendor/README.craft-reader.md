@@ -326,3 +326,21 @@ The snapshot also preserves PdfCraft #1477 (WinAnsi Unicode fallback for TrueTyp
 fonts without Encoding) and #1499 (byte-aligned packed TIFF predictor rows).
 Synthetic tests cover 1/2/4/8-bit RGB rows and rendering, plus embedded TrueType
 text with absent or partial ToUnicode maps and explicit encoding precedence.
+
+## Craft patches for the flattener
+
+Local changes for craft-prepress's PDF-in adapter (`craft_prepress::flatten::pdf`), which reads
+pages through a `Device` that keeps colors as inks and embeds the source fonts again. Code
+comments label them `Craft patch (flatten)`.
+
+| Files | Change |
+|---|---|
+| hayro-interpret `font/outline.rs`, `font/cid.rs` | `OutlineFontData::embedded`: true when the bytes come from the PDF's `FontFile*`, false for a non-embedded CID font's substitute from the font resolver |
+| hayro-interpret `font/outline.rs`, `font/cid.rs`, `font/blob.rs` | `OutlineFontData::index`: the face index of the bytes in a font collection, as the resolver returned it |
+| hayro-interpret `font/outline.rs`, `font/type1.rs`, `font/mod.rs` | `OutlineGlyph::font_data` returns the bare CFF bytes of a simple `FontFile3/Type1C` font, with `embedded: true`; its glyph ids index the CFF. The descriptive fields (`postscript_name`, `weight`, flags) are left empty |
+| hayro-interpret `device.rs` | `Device::set_overprint(fill, stroke, mode)`: the `op`, `OP` and `OPM` for the paints that follow. `Device::set_isolated`: the group just pushed is isolated (`/I true`). Both default to no-ops |
+| hayro-interpret `interpret/path.rs`, `interpret/text.rs`, `x_object.rs` | `set_overprint` is called where `set_blend_mode` is for fills, strokes (the `sh` operator included), glyphs and images; `set_isolated` after an isolated group is pushed |
+| hayro-interpret `color.rs` | `Color::ink_paint`: the inks a color paints, as plate mode separates it (`color::InkPaint`). `Color::spot_alternate`: a spot ink at 100% (`color::SpotAlternate`), CMYK when the alternate space is DeviceCMYK. `Color::opacity` and `Color::is_device_cmyk` |
+| hayro-interpret `color.rs` | `color::InkSpace`, `ColorSpace::ink_space` and `ColorSpace::ink_values`: how a space's colors are kept as inks (gray, CMYK, its colorants, `All`, `None`) and colors converted in batches, process color as `Color::ink_paint` converts it. `ColorSpace::components`; `ColorSpace::is_device_cmyk` and `ColorSpace::spot_alternate` public |
+| hayro-interpret `types.rs`, `x_object.rs` | `RasterImage::with_inks`: an image's samples in its own space's inks (`InkImage`), `/Decode` and `/Matte` applied, transfer functions left out, with its alpha at the alpha's own size |
+| hayro-interpret `interpret/mod.rs` | The `sh` operator drops the shading's `/Background`, which only a shading pattern paints (ISO 32000-2 §8.7.4.5.1) |

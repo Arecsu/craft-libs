@@ -1,15 +1,16 @@
 use crate::cache::{Cache, DecodedImageCache, DecodedImageKey};
 use crate::color::{
-    ColorComponents, ColorSpace, DefaultColorSpaces, DeviceFamily, InkUse, Plate, ToRgb,
+    CmykSimulation, ColorComponents, ColorSpace, DefaultColorSpaces, DeviceFamily, InkSpace,
+    InkUse, Plate, ToRgb,
 };
 use crate::context::Context;
 use crate::device::Device;
 use crate::function::{Function, interpolate};
-use crate::interpret::path::get_paint;
+use crate::interpret::path::{get_paint, set_overprint};
 use crate::interpret::state::ActiveTransferFunction;
 use crate::{BlendMode, CacheKey, ClipPath, Image, Paint, RasterImage, StencilImage};
 use crate::{FillRule, InterpreterWarning, WarningSinkFn, interpret};
-use crate::{ImageData, LumaData, RgbData};
+use crate::{ImageData, InkImage, LumaData, RgbData};
 use hayro_syntax::bit_reader::BitReader;
 use hayro_syntax::content::TypedIter;
 use hayro_syntax::object::Array;
@@ -209,6 +210,10 @@ pub(crate) fn draw_form_xobject<'a, 'b>(
         if x_object.is_knockout {
             device.set_knockout();
         }
+        // Craft patch (flatten): tell the device the group is isolated.
+        if x_object.is_isolated {
+            device.set_isolated();
+        }
     }
 
     device.set_soft_mask(context.get().graphics_state.soft_mask.clone());
@@ -340,6 +345,8 @@ pub(crate) fn draw_image_xobject<'a, 'b>(
 
     device.set_soft_mask(None);
     device.set_blend_mode(BlendMode::default());
+    // Craft patch (flatten): tell the device the overprint parameters.
+    set_overprint(context, device);
     // PdfCraft patch (46): the group just pushed applies the fill opacity, so a stencil mask's
     // paint (the fill color) must not carry it again: at `ca 0.5` a mask was drawn at a
     // quarter of its opacity (#2975). The alpha is put back below: `restore_state` doesn't
@@ -948,6 +955,111 @@ fn decode_raster(
     };
 
     Some(DecodedRaster { image, alpha })
+}
+
+/// Craft patch (flatten): the image's samples in its own space's inks (see
+/// [`RasterImage::with_inks`](crate::RasterImage::with_inks)): `/Decode` and `/Matte` applied,
+/// process colour converted as [`ColorSpace::ink_values`] does, transfer functions left out
+/// (as on a plate).
+pub(crate) fn decode_inks(
+    obj: &ImageXObject<'_>,
+    simulation: Option<&CmykSimulation>,
+) -> Option<InkImage> {
+    if obj.is_mask {
+        return None;
+    }
+    let mut ctx = decode_context(obj, None)?;
+    let cs = ctx.color_space.clone();
+    let n = cs.components();
+    if n == 0 {
+        return None;
+    }
+    let space = cs.ink_space(simulation);
+    let bpc = ctx.bits_per_component;
+    let mut height = ctx.height;
+    let is_default = ctx.decode_arr == cs.default_decode_arr(bpc as f32);
+    let is_inverted = ctx.decode_arr == cs.inverted_default_decode_arr(bpc as f32);
+    let identity = !cs.is_indexed()
+        && space.len() == n
+        && !matches!(space, InkSpace::Cmyk { converted: true });
+    let matte = obj
+        .stream
+        .dict()
+        .get::<Stream<'_>>(SMASK)
+        .and_then(|s| s.dict().get::<ColorComponents>(MATTE))
+        .filter(|m| m.len() == n && !cs.is_indexed());
+
+    let mut alpha_height = height;
+    let alpha = resolve_alpha(
+        obj,
+        &mut ctx.decoded,
+        None,
+        &cs,
+        bpc,
+        ctx.width,
+        &mut alpha_height,
+        ctx.scale_factors,
+        None,
+    )
+    .flatten();
+    let matte_alpha = alpha
+        .as_ref()
+        .filter(|a| a.width == ctx.width && a.height == height && matte.is_some());
+
+    let samples = if bpc == 8 && identity && (is_default || is_inverted) && matte_alpha.is_none() {
+        let mut data = ctx.decoded.data.into_owned();
+        fix_image_length(&mut data, ctx.width, &mut height, 0, &cs)?;
+        if is_inverted {
+            for b in &mut data {
+                *b = 255 - *b;
+            }
+        }
+        data
+    } else {
+        let mut components = get_components(&ctx.decoded.data, ctx.width, height, &cs, bpc)?;
+        fix_image_length(&mut components, ctx.width, &mut height, 0, &cs)?;
+        let width = space.len();
+        let mut samples = Vec::with_capacity(components.len() / n * width);
+        let mut colors = Vec::new();
+        let mut values = Vec::new();
+        const CHUNK: usize = 1 << 14;
+        for (c, chunk) in components.chunks(CHUNK * n).enumerate() {
+            colors.clear();
+            for pixel in chunk.chunks_exact(n) {
+                let start = colors.len();
+                for (sample, range) in pixel.iter().zip(&ctx.decode_arr) {
+                    colors.push(decode_sample(*sample, bpc, *range));
+                }
+                colors.resize(start + n, 0.0);
+            }
+            if let (Some(matte), Some(alpha)) = (&matte, matte_alpha) {
+                for (k, pixel) in colors.chunks_exact_mut(n).enumerate() {
+                    let a = alpha.data.get(c * CHUNK + k).copied().unwrap_or(255);
+                    if a == 0 {
+                        continue;
+                    }
+                    let a = f32::from(a) / 255.0;
+                    for (v, m) in pixel.iter_mut().zip(matte.iter()) {
+                        *v = m + (*v - m) / a;
+                    }
+                }
+            }
+            values.clear();
+            cs.ink_values(&colors, simulation, &mut values);
+            samples.extend(values.iter().map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8));
+        }
+        samples
+    };
+
+    Some(InkImage {
+        width: ctx.width,
+        height,
+        space,
+        color_space: cs,
+        samples,
+        alpha,
+        scale_factors: ctx.scale_factors,
+    })
 }
 
 fn decode_mask_bytes(

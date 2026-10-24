@@ -44,6 +44,9 @@ craft-<name> = { git = "https://github.com/storytold/craft-libs", rev = "<commit
   lookup with fallback (`pt-br` → `pt` → English), plurals, language names, the system locale and
   a pseudo locale. The catalogs stay a fully optional build input; apps keep `tl!` and their
   language setting.
+- [`craft-jpeg`](crates/jpeg/README.md): clean-room decoder for 12-bit and arithmetic-coded
+  JPEG (T.81 SOF0/SOF1 at 12 bits, SOF9, SOF10), from PhotoCraft, and a frame probe for routing.
+  Metadata stays in each app.
 - [`craft-keymap`](crates/keymap/README.md): keyboard bindings: chords and their text forms,
   scopes, conflicts, user overrides stored through craft-settings and import of other
   applications' shortcut sets. Command catalogs, file readers and the shortcut editor UI stay

@@ -21,12 +21,14 @@ hayro = { version = "=0.7.1", default-features = false }
 hayro-interpret = { version = "=0.7.0", default-features = false, features = ["embed-fonts", "embed-cmaps"] }
 hayro-syntax = { version = "=0.7.2", default-features = false, features = ["std"] }
 bytemuck = "1"
+kurbo = "0.13"
 thiserror = "2"
 craft-atomic = { path = "crates/atomic" }
 craft-cms = { path = "crates/cms" }
 craft-docpath = { path = "crates/docpath" }
 craft-fonts-build = { path = "crates/fonts-build" }
 craft-i18n = { path = "crates/i18n" }
+craft-jpeg = { path = "crates/jpeg" }
 craft-keymap = { path = "crates/keymap" }
 craft-media = { path = "crates/media" }
 craft-prepress = { path = "crates/prepress" }

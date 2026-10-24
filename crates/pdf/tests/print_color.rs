@@ -630,6 +630,33 @@ fn device_n_mixing_spots_and_process_writes_nchannel_attributes() {
     }
 }
 
+/// NChannel's `/Subtype` and `/Process` are PDF 1.6: a 1.4 file (PDF/X-1a) gets only
+/// `/Colorants`, a 1.7 file the NChannel attributes.
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+fn device_n_attributes_follow_the_pdf_version() {
+    for version in [PdfVersion::Pdf14, PdfVersion::Pdf17] {
+        let settings = SerializeSettings {
+            configuration: craft_pdf::write::configuration(version, None).unwrap(),
+            compress_content_streams: false,
+            ..cmyk_settings()
+        };
+        let color = device_n(vec![Colorant::Process(Process::Cyan), spot("Gold", gold())], vec![255, 128]);
+        let bytes = device_n_sample(settings, vec![color]).unwrap();
+        let nchannel = version >= PdfVersion::Pdf16;
+        assert_eq!(bytes.windows(8).any(|w| w == b"NChannel"), nchannel, "{version:?}");
+        let mut found = 0;
+        device_n_spaces(&bytes, |_, _, _, attrs| {
+            found += 1;
+            let attrs = attrs.expect("attributes");
+            assert!(attrs.get::<Dict<'_>>(b"Colorants".as_slice()).unwrap().get::<Array<'_>>(b"Gold".as_slice()).is_some());
+            assert_eq!(attrs.contains_key(b"Subtype".as_slice()), nchannel, "{version:?}");
+            assert_eq!(attrs.contains_key(b"Process".as_slice()), nchannel, "{version:?}");
+        });
+        assert_eq!(found, 1);
+    }
+}
+
 /// A spot name keeps one alternate across Separation and DeviceN; PDF/A-2 rejects a second.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 #[cfg_attr(not(target_arch = "wasm32"), test)]
@@ -1084,16 +1111,23 @@ fn print_settings_reject_a_profile_that_is_not_cmyk() {
 }
 
 /// `/Trapped` (`Unknown` included) and `GTS_PDFXVersion` go to the information dictionary and
-/// to XMP; without settings neither appears.
+/// to XMP, `GTS_PDFXConformance` to the dictionary only; without settings none appears.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 fn trapped_and_pdfx_version_are_written_to_info_and_xmp() {
-    let settings = SerializeSettings { trapped: Some(Trapped::True), pdfx_version: Some("PDF/X-4".to_owned()), ..Default::default() };
+    let settings = SerializeSettings {
+        trapped: Some(Trapped::True),
+        pdfx_version: Some("PDF/X-1:2003".to_owned()),
+        pdfx_conformance: Some("PDF/X-1a:2003".to_owned()),
+        ..Default::default()
+    };
     let marked = String::from_utf8_lossy(&sample(settings, None).unwrap()).into_owned();
     assert!(marked.contains("/Trapped/True"), "Info /Trapped");
-    assert!(marked.contains("/GTS_PDFXVersion(PDF/X-4)"), "Info /GTS_PDFXVersion");
+    assert!(marked.contains("/GTS_PDFXVersion(PDF/X-1:2003)"), "Info /GTS_PDFXVersion");
+    assert!(marked.contains("/GTS_PDFXConformance(PDF/X-1a:2003)"), "Info /GTS_PDFXConformance");
+    assert!(!marked.contains("pdfxid:GTS_PDFXConformance"), "no XMP conformance property");
     assert!(marked.contains("<pdf:Trapped>True</pdf:Trapped>"), "XMP pdf:Trapped");
-    assert!(marked.contains("<pdfxid:GTS_PDFXVersion>PDF/X-4</pdfxid:GTS_PDFXVersion>"), "XMP GTS_PDFXVersion");
+    assert!(marked.contains("<pdfxid:GTS_PDFXVersion>PDF/X-1:2003</pdfxid:GTS_PDFXVersion>"), "XMP GTS_PDFXVersion");
 
     let unknown = SerializeSettings { trapped: Some(Trapped::Unknown), ..Default::default() };
     let unknown = String::from_utf8_lossy(&sample(unknown, None).unwrap()).into_owned();

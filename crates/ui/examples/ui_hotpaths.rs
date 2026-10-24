@@ -390,7 +390,7 @@ fn dock_layout(panels: u32, with_floating: bool) -> Layout<u32> {
                 }),
                 second: Box::new(leaf(2)),
             }),
-            floating: vec![Floating { panels: vec![3], active: 0, rect: [80.0, 70.0, 300.0, 220.0] }],
+            floating: vec![Floating::single(vec![3], 0, [80.0, 70.0, 300.0, 220.0]).with_id(1)],
         }
     } else {
         let all: Vec<u32> = (0..panels).collect();
@@ -662,7 +662,7 @@ fn run_case(case: Case<'_>, fonts: &egui::FontDefinitions) -> Result<Value, Box<
     let dock_id = Id::unique(("ui-perf", case.label));
     let layout = dock_layout(case.panels, case.floating);
     layout.validate()?;
-    let floating: BTreeSet<u32> = layout.floating.iter().flat_map(|group| group.panels.iter().copied()).collect();
+    let floating: BTreeSet<u32> = layout.floating.iter().flat_map(|group| group.panels().copied()).collect();
     let mut scene =
         Scene { dock_id, side_panel: case.side_panel, style: None, error: None, dock_rect: Rect::NOTHING, left_rect: None, central_rect: None };
     let frames = {
