@@ -526,7 +526,8 @@ fn release_over_own_position_is_a_noop() {
 #[test]
 fn floating_border_and_drag_bar_move_and_cancel_as_a_group() {
     for name in ["drag-border", "drag-bar"] {
-        let layout = Layout { root: Some(tabs(&[1], 0)), floating: vec![Floating::single(vec![5, 6], 1, [80.0, 70.0, 300.0, 220.0])] };
+        // Nothing docked: a header drag of a window's only group looks through the window.
+        let layout = Layout { root: None, floating: vec![Floating::single(vec![5, 6], 1, [80.0, 70.0, 300.0, 220.0])] };
         let mut d = Driver::new(layout.clone());
         let from = d.rect(name, 5).center();
         d.hold(from, from + vec2(50.0, 40.0));
@@ -547,7 +548,7 @@ fn floating_border_and_drag_bar_move_and_cancel_as_a_group() {
 /// Moving a floating window by eight fractional pointer steps lands within one
 /// point of the accumulated 80.3 × 60.7 pt offset, without step-rounding drift.
 fn floating_border_movement_does_not_accumulate_fractional_step_rounding() {
-    let layout = Layout { root: Some(tabs(&[1], 0)), floating: vec![Floating::single(vec![5, 6], 1, [80.0, 70.0, 300.0, 220.0])] };
+    let layout = Layout { root: None, floating: vec![Floating::single(vec![5, 6], 1, [80.0, 70.0, 300.0, 220.0])] };
     let mut d = Driver::new(layout);
     let from = d.rect("drag-border", 5).center();
     d.step(vec![Event::PointerMoved(from), button(from, true)]);

@@ -21,7 +21,7 @@ pub(in crate::docking) use native::WindowDrag;
 #[cfg(all(test, feature = "native-windows"))]
 pub(in crate::docking) use {
     cross::DragPointer,
-    native::{APPKIT_CORNER, MACOS_CLOSE, Session, appkit_resize_areas, close_rects, floats_shown, resize_bands, session, wayland},
+    native::{APPKIT_CORNER, MACOS_CLOSE, Session, appkit_resize_areas, close_rects, drag_opacity, floats_shown, resize_bands, session, wayland},
 };
 
 #[cfg(all(test, feature = "native-windows"))]

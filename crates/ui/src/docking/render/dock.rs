@@ -10,7 +10,7 @@ use egui::{Context, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder, p
 
 use super::{GroupKind, Renderer, RowItem, row_drag, row_range, stripless};
 use crate::docking::{
-    Action, Column, DockEvent, DockHeights, DockStyle, Group, GroupDrag, GroupGesture, Node, Placement, Side, Target, Zone,
+    Action, Column, DockEvent, DockHeights, DockStyle, DropTarget, Group, GroupDrag, GroupGesture, Node, Placement, Side, Target, Zone,
     dock_model::Unit,
     targets::{
         DockDrop, DockTarget, SIDE_EDGE_ZONE_DEPTH, STRIP_REACH, body_zone, column_edge, drop_zone, horizontal_line, resolve_dock, usable,
@@ -636,18 +636,25 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
     /// takes tabs: the strip joins the group, and border bands reach into it only
     /// [`STRIP_REACH`] from their lines. Not with [`DockStyle::side_edge_zones`].
     pub(super) fn in_tab_strip(&self, pointer: Pos2) -> bool {
+        self.in_tab_strip_past(pointer, &[])
+    }
+
+    /// [`Self::in_tab_strip`] past the groups holding any of `through`.
+    fn in_tab_strip_past(&self, pointer: Pos2, through: &[P]) -> bool {
+        let own = |t: &DropTarget<P>| t.tabs.iter().any(|(p, _)| through.contains(p));
         !self.style.side_edge_zones
-            && self.targets.iter().rev().find(|t| usable(t.rect) && t.rect.contains(pointer)).is_some_and(|t| {
+            && self.targets.iter().rev().find(|t| usable(t.rect) && t.rect.contains(pointer) && !own(t)).is_some_and(|t| {
                 t.accepts_tabs && t.tab_strip.map(|strip| strip.intersect(t.rect)).is_some_and(|strip| usable(strip) && strip.contains(pointer))
             })
     }
 
     /// The dock target at `pointer`: a band at a border, else a side zone of a dock group's
     /// body ([`SIDE_EDGE_ZONE_DEPTH`] deep with [`DockStyle::side_edge_zones`]). The middle of a
-    /// group that takes tabs is none: the group's own target joins it.
-    fn dock_drop(&self, pointer: Pos2) -> Option<DockDrop<P>> {
+    /// group that takes tabs is none: the group's own target joins it. The groups holding
+    /// `through` (a floating window the drag looks through) hide no strip.
+    fn dock_drop(&self, pointer: Pos2, through: &[P]) -> Option<DockDrop<P>> {
         let mut candidates = self.dock_candidates();
-        let strip = self.in_tab_strip(pointer);
+        let strip = self.in_tab_strip_past(pointer, through);
         if strip {
             candidates.retain(|t| t.line.distance_to_pos(pointer) <= STRIP_REACH);
         }
@@ -670,11 +677,11 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
     /// The dock target a whole group or column drag would take at `pointer`, with the action
     /// and its line. A target that leaves the layout unchanged is a no-op: `None` action.
     pub(super) fn dock_group_proposal(&self, drag: &GroupDrag<P>, pointer: Pos2) -> Option<(Option<Action<P>>, Rect)> {
-        let moving = (drag.gesture == GroupGesture::Window).then_some(&drag.panel);
-        if self.dock_covered(pointer, moving) {
+        let through = self.looks_through(drag);
+        if self.dock_covered(pointer, through.then_some(&drag.panel)) {
             return None;
         }
-        let drop = self.dock_drop(pointer)?;
+        let drop = self.dock_drop(pointer, if through { &drag.members } else { &[] })?;
         let action = group_action(drag, drop.target.to());
         self.checked(action).map(|action| (action, drop.line))
     }
@@ -686,7 +693,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         if self.dock_covered(pointer, None) {
             return None;
         }
-        let drop = self.dock_drop(pointer)?;
+        let drop = self.dock_drop(pointer, &[])?;
         let action = match drop.target.to() {
             // A target named by the dragged panel is its own group or column: another panel
             // there names the same one. With none, the drop leaves the panel where it is.
@@ -707,11 +714,12 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         self.checked(action).map(|action| (action, drop.line))
     }
 
-    /// `Some(None)` when the action is valid but changes nothing, `None` when it is invalid.
+    /// `Some(None)` when the action is valid but changes nothing apart from sizes
+    /// ([`crate::docking::Layout::same_arrangement`]), `None` when it is invalid.
     fn checked(&self, action: Action<P>) -> Option<Option<Action<P>>> {
         let mut candidate = self.layout.clone();
         candidate.apply_with_permissions(action.clone(), |p| self.permissions(p)).ok()?;
-        Some((candidate != *self.layout).then_some(action))
+        Some((!candidate.same_arrangement(self.layout)).then_some(action))
     }
 
     /// The line a drop beside a group, column, dock or the layout's edge previews with.
