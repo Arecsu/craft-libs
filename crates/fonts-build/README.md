@@ -138,7 +138,7 @@ it has: about 3 KB for a CJK interface face cut to an app's catalogs, under 1 KB
 An interface face cut by `subset_to` is served from its cut in `OUT_DIR`, with the start of the
 cut's SHA-256 in its name (`web/fonts/ui/NotoSansTCUI-Regular.1234abcd5678ef90.ttf`) and the cut's
 own `integrity`, so changed catalogs give a new URL rather than a cached copy that fails its check.
-A relative `dir` is under the package directory. Files already there with the right size are not
+A relative `dir` is under the package directory. Files already there with the same bytes are not
 copied again, a deleted one is copied again on the next build, and files of faces no longer
 selected, and earlier cuts, stay.
 
