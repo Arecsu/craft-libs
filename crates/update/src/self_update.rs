@@ -147,7 +147,7 @@ fn detect(app: &App, exe: &Path) -> Option<Install> {
     // registry) or by default %LOCALAPPDATA%\Programs\<App Name>.
     let canonical = |p: PathBuf| p.canonicalize().unwrap_or(p);
     let recorded = msi_install_dir(app).map(canonical);
-    let default = dirs::data_local_dir().map(|d| canonical(d.join("Programs").join(app.name)));
+    let default = crate::folders::data_local_dir().map(|d| canonical(d.join("Programs").join(app.name)));
     if [recorded, default].into_iter().flatten().any(|d| d == dir) {
         return Some(Install::Msi(exe.to_path_buf()));
     }
