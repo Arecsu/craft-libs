@@ -318,7 +318,10 @@ pub enum Placement<P> {
     Column { after: bool },
     /// A new frame along one edge of the docked layout, a quarter of its width or height: the
     /// root is split, or in a layout with docks, the part between them. The anchor names any
-    /// docked panel. `Center` is invalid.
+    /// docked panel. A protected anchor ([`Permissions::is_protected`], applied through
+    /// [`Layout::apply_with_permissions`]) narrows the part to the canvas column: where neither
+    /// side of a side-by-side split is a dock and only one holds a protected panel, that side.
+    /// `Center` is invalid.
     Edge(Zone),
 }
 
@@ -819,14 +822,14 @@ impl<P: Clone + Eq + Hash> Layout<P> {
         let window_open = location.anchor.as_ref().is_some_and(|anchor| proposed.floating.iter().any(|w| w.contains(anchor)));
         if let Some(rect) = location.floating.filter(|_| !window_open) {
             // A window that closed as a whole reopens at its last rect.
-            proposed.insert_moving(moving(), Target::Float { rect: Some(rect) })?;
+            proposed.insert_moving(moving(), Target::Float { rect: Some(rect) }, &|_| false)?;
         } else if let Some(anchor) = &location.anchor
             && matches!(location.placement, Placement::Group { .. } | Placement::Column { .. })
         {
             if !proposed.contains(anchor) {
                 return Err(DockError::MissingTarget);
             }
-            proposed.insert_moving(moving(), Target::At { anchor: anchor.clone(), placement: location.placement.clone() })?;
+            proposed.insert_moving(moving(), Target::At { anchor: anchor.clone(), placement: location.placement.clone() }, &|_| false)?;
         } else if let Some(column) = state.and_then(|s| s.column).filter(|_| location.anchor.is_none()) {
             // Alone in its dock: back at that edge, as the outermost column if a dock exists.
             match proposed.dock_path(column.side) {
@@ -835,7 +838,7 @@ impl<P: Clone + Eq + Hash> Layout<P> {
                     let Moving { groups, .. } = moving();
                     columns.insert(0, Column { groups, width: column.width, iconic: column.iconic, iconic_width: column.iconic_width });
                 }
-                None => proposed.insert_moving(moving(), Target::NewDock { side: column.side })?,
+                None => proposed.insert_moving(moving(), Target::NewDock { side: column.side }, &|_| false)?,
             }
         } else if let Some(anchor) = &location.anchor {
             if !proposed.contains(anchor) {
@@ -862,7 +865,7 @@ impl<P: Clone + Eq + Hash> Layout<P> {
                     Placement::Tab { before: Some(before) } if !proposed.same_group(before, anchor) => Placement::Tab { before: None },
                     placement => placement.clone(),
                 };
-                proposed.apply_inner(Action::OpenAt { panel: panel.clone(), anchor: anchor.clone(), placement })?;
+                proposed.apply_inner(Action::OpenAt { panel: panel.clone(), anchor: anchor.clone(), placement }, &|_| false)?;
                 if let Some(size) = location.size {
                     proposed.trees_mut().any(|root| restore_parent_size(root, &panel, size));
                 }
@@ -899,7 +902,7 @@ impl<P: Clone + Eq + Hash> Layout<P> {
                 .find(|p| matches!(self.place(p), Some(Place::Dock { .. } | Place::Node(_))))
                 .cloned()
                 .ok_or(DockError::MissingTarget)?;
-            proposed.apply_inner(Action::OpenAt { panel: panel.clone(), anchor, placement: Placement::Edge(Zone::Right) })?;
+            proposed.apply_inner(Action::OpenAt { panel: panel.clone(), anchor, placement: Placement::Edge(Zone::Right) }, &|_| false)?;
             if let Some(root) = proposed.root.as_mut() {
                 restore_parent_size(root, &panel, SplitSize::Ratio(0.25));
             }
@@ -987,7 +990,7 @@ impl<P: Clone + Eq + Hash> Layout<P> {
         }
         let closed = self.closed_by(&action)?;
         let mut proposed = self.clone();
-        proposed.apply_inner(action)?;
+        proposed.apply_inner(action, &|p| permissions(p).is_protected())?;
         proposed.validate()?;
         *self = proposed;
         Ok(closed)
@@ -1017,7 +1020,8 @@ impl<P: Clone + Eq + Hash> Layout<P> {
         })
     }
 
-    fn apply_inner(&mut self, action: Action<P>) -> Result<(), DockError> {
+    /// `canvas` is the protected-panel test an outer edge drop narrows by.
+    fn apply_inner(&mut self, action: Action<P>, canvas: &dyn Fn(&P) -> bool) -> Result<(), DockError> {
         match action {
             Action::Move { panel, anchor, placement } => {
                 if panel == anchor {
@@ -1036,7 +1040,7 @@ impl<P: Clone + Eq + Hash> Layout<P> {
                     }
                 }
                 let entry = self.take(&panel).ok_or(DockError::MissingPanel)?;
-                self.insert(entry, &anchor, placement)
+                self.insert(entry, &anchor, placement, canvas)
             }
             Action::Float { panel, rect } => {
                 if !valid_rect(rect) {
@@ -1070,11 +1074,11 @@ impl<P: Clone + Eq + Hash> Layout<P> {
             }
             Action::Open { panel, anchor } => {
                 if self.contains(&panel) {
-                    return self.apply_inner(Action::Activate { panel });
+                    return self.apply_inner(Action::Activate { panel }, canvas);
                 }
                 let entry = StackEntry { panel, open: true, height: None };
                 if let Some(anchor) = anchor {
-                    self.insert(entry, &anchor, Placement::Tab { before: None })
+                    self.insert(entry, &anchor, Placement::Tab { before: None }, canvas)
                 } else if self.root.is_none() {
                     self.root = Some(Node::Tabs { panels: vec![entry.panel], active: 0 });
                     Ok(())
@@ -1084,14 +1088,14 @@ impl<P: Clone + Eq + Hash> Layout<P> {
             }
             Action::OpenAt { panel, anchor, placement } => {
                 if self.contains(&panel) {
-                    return self.apply_inner(Action::Move { panel, anchor, placement });
+                    return self.apply_inner(Action::Move { panel, anchor, placement }, canvas);
                 }
                 if let Placement::Tab { before: Some(before) } = &placement
                     && !self.same_group(before, &anchor)
                 {
                     return Err(DockError::MissingTarget);
                 }
-                self.insert(StackEntry { panel, open: true, height: None }, &anchor, placement)
+                self.insert(StackEntry { panel, open: true, height: None }, &anchor, placement, canvas)
             }
             Action::MoveFloating { panel, rect } => {
                 if !valid_rect(rect) {
@@ -1142,13 +1146,13 @@ impl<P: Clone + Eq + Hash> Layout<P> {
                     return Ok(());
                 }
                 let moving = self.take_unit(panel, unit)?;
-                self.insert_moving(moving, to.clone())
+                self.insert_moving(moving, to.clone(), canvas)
             }
             Action::MovePanel { panel, to } => match to {
-                Target::At { anchor, placement } => self.apply_inner(Action::Move { panel, anchor, placement }),
+                Target::At { anchor, placement } => self.apply_inner(Action::Move { panel, anchor, placement }, canvas),
                 to => {
                     let entry = self.take(&panel).ok_or(DockError::MissingPanel)?;
-                    self.insert_moving(Moving::group(Group::new(vec![entry.panel], 0)), to)
+                    self.insert_moving(Moving::group(Group::new(vec![entry.panel], 0)), to, canvas)
                 }
             },
             Action::CloseGroup { ref panel } | Action::CloseWindow { ref panel } => self.take_unit(panel, unit_of(&action)).map(|_| ()),
@@ -1285,16 +1289,18 @@ impl<P: Clone + Eq + Hash> Layout<P> {
         if let Some((panel, _)) = groups.clone().find(|(_, place)| side(place) == Some(Side::End)).or_else(|| groups.clone().next()) {
             return Some(((*panel).clone(), Placement::Tab { before: None }));
         }
-        docked.first().map(|(panel, _)| ((*panel).clone(), Placement::Edge(Zone::Right)))
+        // A canvas anchor would narrow the edge to the canvas column.
+        let edge = docked.iter().find(|(p, _)| !permissions(p).is_protected()).or(docked.first());
+        edge.map(|(panel, _)| ((*panel).clone(), Placement::Edge(Zone::Right)))
     }
 
-    fn insert(&mut self, entry: StackEntry<P>, anchor: &P, placement: Placement<P>) -> Result<(), DockError> {
+    fn insert(&mut self, entry: StackEntry<P>, anchor: &P, placement: Placement<P>, canvas: &dyn Fn(&P) -> bool) -> Result<(), DockError> {
         let place = self.place(anchor).ok_or(DockError::MissingTarget)?;
         let tree = place.tree_path().map(|(window, path)| (window, path.to_vec()));
         let Some((window, path)) = tree.filter(|_| !matches!(placement, Placement::Group { .. } | Placement::Column { .. } | Placement::Edge(_)))
         else {
             let group = Group::new(vec![entry.panel], 0);
-            return self.insert_moving(Moving::group(group), Target::At { anchor: anchor.clone(), placement });
+            return self.insert_moving(Moving::group(group), Target::At { anchor: anchor.clone(), placement }, canvas);
         };
         let root = self.tree_mut(window).ok_or(DockError::MissingTarget)?;
         if let Placement::Split(zone) = placement

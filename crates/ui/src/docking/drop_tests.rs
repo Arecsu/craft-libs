@@ -133,8 +133,13 @@ fn a_group_that_takes_no_tabs_maps_its_whole_body_to_its_edges() {
     let canvas = Permissions { accepts_tabs: false, ..Permissions::default() };
     let d = driver(&[(1, canvas)]);
     let (body, rect) = group(&d, 1);
-    for (zone, at) in [(Zone::Left, body.center() - vec2(10.0, 0.0)), (Zone::Top, body.center() - vec2(0.0, 10.0))] {
-        let mut d = driver(&[(1, canvas)]);
+    // By default only its top and bottom: left of center goes to the nearer of those.
+    for (zone, at, edges) in [
+        (Zone::Left, body.center() - vec2(10.0, 2.0), Sides::ALL),
+        (Zone::Top, body.center() - vec2(10.0, 2.0), DockStyle::default().drop_edges),
+        (Zone::Bottom, body.center() + vec2(-10.0, 2.0), DockStyle::default().drop_edges),
+    ] {
+        let mut d = driver(&[(1, canvas)]).with_style(move |style| style.drop_edges = edges);
         d.hold(tab(&d, 3), at);
         assert!(d.filled(line(rect, zone)), "{zone:?}");
         let out = d.release(at);
@@ -166,7 +171,7 @@ fn a_side_without_room_joins_as_a_tab_or_offers_nothing() {
     let out = d.drag(tab(&d, 3), top);
     assert_eq!(out.actions, vec![Action::Move { panel: 3, anchor: 1, placement: Placement::Split(Zone::Top) }]);
     // A group that takes no tabs offers nothing there.
-    let mut d = narrow(&[(1, Permissions { accepts_tabs: false, ..Permissions::default() })]);
+    let mut d = narrow(&[(1, Permissions { accepts_tabs: false, ..Permissions::default() })]).with_style(|style| style.drop_edges = Sides::ALL);
     d.hold(tab(&d, 3), left);
     assert!(!d.outlined(rect.shrink(1.0)));
     let out = d.release(left);
@@ -194,4 +199,124 @@ fn the_root_edge_band_is_28_pt_and_previews_a_line_along_the_layouts_edge() {
     let mut d = driver(&[]);
     let out = d.drag(tab(&d, 3), pos2(x, 7.0));
     assert!(matches!(&out.actions[..], [Action::Move { panel: 3, placement: Placement::Edge(Zone::Top), .. }]), "{:?}", out.actions);
+}
+
+fn tabs(panels: &[u32]) -> Node<u32> {
+    Node::Tabs { panels: panels.to_vec(), active: 0 }
+}
+
+fn split(axis: SplitAxis, size: SplitSize, first: Node<u32>, second: Node<u32>) -> Node<u32> {
+    Node::Split { axis, size, first: Box::new(first), second: Box::new(second) }
+}
+
+/// Side frame `[1]`, canvas 0 and side frame `[2, 3]` side by side, 200, 400 and 200 pt wide.
+fn canvas_columns() -> Layout<u32> {
+    let sides = split(SplitAxis::Horizontal, SplitSize::FixedSecond(200.0), tabs(&[0]), Node::Tabs { panels: vec![2, 3], active: 1 });
+    Layout { root: Some(split(SplitAxis::Horizontal, SplitSize::FixedFirst(200.0), tabs(&[1]), sides)), floating: Vec::new() }
+}
+
+fn canvas_driver(canvas: Permissions, style: impl Fn(&mut DockStyle) + 'static) -> Driver {
+    DockDriver::new(canvas_columns(), Bodies { rules: [(0, canvas)].into(), ..Bodies::default() }).with_style(style)
+}
+
+fn moves(out: &DockOutput<u32>) -> bool {
+    out.actions.iter().any(|a| matches!(a, Action::Move { .. } | Action::MovePanel { .. }))
+}
+
+#[test]
+fn between_side_frames_the_outer_edge_band_covers_only_the_canvas_column() {
+    let d = canvas_driver(Permissions::PROTECTED, |_| {});
+    let (canvas, _) = group(&d, 0);
+    let (side, _) = group(&d, 1);
+    let at = pos2(canvas.center().x, 590.0);
+    let mut d = canvas_driver(Permissions::PROTECTED, |_| {});
+    d.hold(tab(&d, 3), at);
+    assert!(d.filled(line(canvas, Zone::Bottom)), "a line along the canvas column's bottom");
+    assert!(!d.filled(Rect::from_x_y_ranges(0.0..=800.0, 596.0..=600.0)), "no line along the window's bottom");
+    let out = d.release(at);
+    assert_eq!(out.actions, vec![Action::Move { panel: 3, anchor: 0, placement: Placement::Edge(Zone::Bottom) }]);
+    // The side frames keep their full height.
+    let column = split(SplitAxis::Vertical, SplitSize::Ratio(0.75), tabs(&[0]), tabs(&[3]));
+    let sides = split(SplitAxis::Horizontal, SplitSize::FixedSecond(200.0), column, tabs(&[2]));
+    assert_eq!(d.layout.root, Some(split(SplitAxis::Horizontal, SplitSize::FixedFirst(200.0), tabs(&[1]), sides)));
+    // Under a side frame, its own bottom third.
+    let mut d = canvas_driver(Permissions::PROTECTED, |_| {});
+    let out = d.drag(tab(&d, 3), pos2(side.center().x, 590.0));
+    assert_eq!(out.actions, vec![Action::Move { panel: 3, anchor: 1, placement: Placement::Split(Zone::Bottom) }]);
+}
+
+#[test]
+fn between_docks_the_outer_edge_band_covers_the_part_between_them() {
+    let dock = |side, panels: &[u32]| Node::Dock { side, columns: vec![Column::new(vec![Group::new(panels.to_vec(), 0)], 200.0)] };
+    let middle = split(SplitAxis::Vertical, SplitSize::Ratio(0.7), tabs(&[0]), tabs(&[4]));
+    let inner = split(SplitAxis::Horizontal, SplitSize::FixedSecond(200.0), middle.clone(), dock(Side::End, &[2, 3]));
+    let layout =
+        Layout { root: Some(split(SplitAxis::Horizontal, SplitSize::FixedFirst(200.0), dock(Side::Start, &[1]), inner)), floating: Vec::new() };
+    let driver = || DockDriver::new(layout.clone(), Bodies { rules: [(0, Permissions::PROTECTED)].into(), ..Bodies::default() });
+    let d = driver();
+    let (canvas, _) = group(&d, 0);
+    let (timeline, _) = group(&d, 4);
+    let area = Rect::from_x_y_ranges(canvas.x_range(), (canvas.top() - 26.0)..=timeline.bottom());
+    let at = pos2(canvas.center().x, 590.0);
+    let mut d = driver();
+    d.hold(tab(&d, 3), at);
+    assert!(d.filled(line(area, Zone::Bottom)), "a line along the bottom between the docks");
+    let out = d.release(at);
+    assert!(matches!(&out.actions[..], [Action::Move { panel: 3, placement: Placement::Edge(Zone::Bottom), .. }]), "{:?}", out.actions);
+    let Some(Node::Split { second, .. }) = &d.layout.root else { panic!("{:?}", d.layout) };
+    let Node::Split { first, .. } = &**second else { panic!("{:?}", d.layout) };
+    assert_eq!(**first, split(SplitAxis::Vertical, SplitSize::Ratio(0.75), middle, tabs(&[3])));
+}
+
+#[test]
+fn drop_edges_limit_the_outer_edges_and_the_canvas_sides() {
+    let left_right = |style: &mut DockStyle| style.drop_edges = Sides::LEFT_RIGHT;
+    let d = canvas_driver(Permissions::PROTECTED, left_right);
+    // The canvas has no tab strip: its body is its frame.
+    let (canvas, _) = group(&d, 0);
+    let (side, _) = group(&d, 1);
+    // The bottom edge takes nothing.
+    let at = pos2(canvas.center().x, 590.0);
+    let mut d = canvas_driver(Permissions::PROTECTED, left_right);
+    d.hold(tab(&d, 3), at);
+    assert!(!d.filled(line(canvas, Zone::Bottom)));
+    assert!(!moves(&d.release(at)));
+    // The left edge splits around the canvas column.
+    let at = pos2(canvas.left() + 5.0, canvas.center().y);
+    let mut d = canvas_driver(Permissions::PROTECTED, left_right);
+    d.hold(tab(&d, 3), at);
+    assert!(d.filled(line(canvas, Zone::Left)), "a line along the canvas column's left edge");
+    let out = d.release(at);
+    assert_eq!(out.actions, vec![Action::Move { panel: 3, anchor: 0, placement: Placement::Edge(Zone::Left) }]);
+    let column = split(SplitAxis::Horizontal, SplitSize::Ratio(0.25), tabs(&[3]), tabs(&[0]));
+    let sides = split(SplitAxis::Horizontal, SplitSize::FixedSecond(200.0), column, tabs(&[2]));
+    assert_eq!(d.layout.root, Some(split(SplitAxis::Horizontal, SplitSize::FixedFirst(200.0), tabs(&[1]), sides)));
+    // A side frame keeps all four sides.
+    for (zone, y) in [(Zone::Bottom, 590.0), (Zone::Top, side.top() + side.height() * 0.2)] {
+        let mut d = canvas_driver(Permissions::PROTECTED, left_right);
+        let out = d.drag(tab(&d, 3), pos2(side.center().x, y));
+        assert_eq!(out.actions, vec![Action::Move { panel: 3, anchor: 1, placement: Placement::Split(zone) }], "{zone:?}");
+    }
+    // No drop edges: no outer edge takes a drop.
+    for at in [pos2(canvas.center().x, 590.0), pos2(canvas.center().x, 5.0), pos2(canvas.left() + 5.0, 300.0), pos2(canvas.right() - 5.0, 300.0)] {
+        let mut d = canvas_driver(Permissions::PROTECTED, |style| style.drop_edges = Sides::NONE);
+        let out = d.drag(tab(&d, 3), at);
+        assert!(!moves(&out), "{at:?}: {:?}", out.actions);
+    }
+}
+
+#[test]
+fn a_canvas_that_takes_splits_takes_them_only_on_its_drop_edges() {
+    let beside = Permissions { accepts_splits: true, ..Permissions::PROTECTED };
+    let d = canvas_driver(beside, |_| {});
+    let (body, _) = group(&d, 0);
+    let at = pos2(body.left() + body.width() * 0.3, body.bottom() - 40.0);
+    for (edges, zone) in [(DockStyle::default().drop_edges, Some(Zone::Bottom)), (Sides::LEFT_RIGHT, Some(Zone::Left)), (Sides::NONE, None)] {
+        let mut d = canvas_driver(beside, move |style| style.drop_edges = edges);
+        let out = d.drag(tab(&d, 3), at);
+        match zone {
+            Some(zone) => assert_eq!(out.actions, vec![Action::Move { panel: 3, anchor: 0, placement: Placement::Split(zone) }], "{edges:?}"),
+            None => assert!(!moves(&out), "{:?}", out.actions),
+        }
+    }
 }

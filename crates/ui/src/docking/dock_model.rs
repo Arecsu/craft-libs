@@ -454,8 +454,10 @@ impl<P: Clone + Eq + Hash> Layout<P> {
         None
     }
 
-    /// The node an edge split wraps: the root, or the part between the docks.
-    pub(in crate::docking) fn edge_path(&self) -> Vec<bool> {
+    /// The node an edge split wraps: the root, or the part between the docks. Where neither side
+    /// of a side-by-side split is a dock and only one holds a `canvas` panel, that side: the
+    /// canvas column, without the side frames.
+    pub(in crate::docking) fn edge_path(&self, canvas: &dyn Fn(&P) -> bool) -> Vec<bool> {
         let mut path = Vec::new();
         let mut node = self.root.as_ref();
         while let Some(Node::Split { axis: SplitAxis::Horizontal, first, second, .. }) = node {
@@ -465,7 +467,11 @@ impl<P: Clone + Eq + Hash> Layout<P> {
             let second_side = match (&**first, &**second) {
                 (Node::Dock { .. }, _) => true,
                 (_, Node::Dock { .. }) => false,
-                _ => break,
+                _ => match (tree_panels(first).into_iter().any(canvas), tree_panels(second).into_iter().any(canvas)) {
+                    (true, false) => false,
+                    (false, true) => true,
+                    _ => break,
+                },
             };
             path.push(second_side);
             node = Some(if second_side { second } else { first });
@@ -666,7 +672,8 @@ impl<P: Clone + Eq + Hash> Layout<P> {
     }
 
     /// Insert groups taken by [`Self::take_unit`] (or a new single-panel group).
-    pub(super) fn insert_moving(&mut self, moving: Moving<P>, to: Target<P>) -> Result<(), DockError> {
+    /// `canvas` is the protected-panel test an outer edge drop narrows by ([`Self::edge_path`]).
+    pub(super) fn insert_moving(&mut self, moving: Moving<P>, to: Target<P>, canvas: &dyn Fn(&P) -> bool) -> Result<(), DockError> {
         if moving.groups.is_empty() || moving.groups.iter().any(|g| g.panels.is_empty()) {
             return Err(DockError::MissingPanel);
         }
@@ -735,7 +742,7 @@ impl<P: Clone + Eq + Hash> Layout<P> {
                     // A floating window is a tree: a group above or below splits the anchor's group.
                     Placement::Group { below, .. } if matches!(place, Place::Floating { .. }) => {
                         let zone = if below { Zone::Bottom } else { Zone::Top };
-                        self.insert_moving(moving, Target::At { anchor, placement: Placement::Split(zone) })
+                        self.insert_moving(moving, Target::At { anchor, placement: Placement::Split(zone) }, canvas)
                     }
                     Placement::Group { below, height } => {
                         if !valid_height(height) {
@@ -757,7 +764,8 @@ impl<P: Clone + Eq + Hash> Layout<P> {
                         if zone == Zone::Center || matches!(place, Place::Floating { .. }) {
                             return Err(DockError::InvalidPlacement);
                         }
-                        let path = self.edge_path();
+                        // A protected anchor narrows the edge to the canvas column.
+                        let path = if canvas(&anchor) { self.edge_path(canvas) } else { self.edge_path(&|_| false) };
                         let node = self.root.as_mut().and_then(|root| node_at_mut(root, &path)).ok_or(DockError::MissingTarget)?;
                         if matches!(node, Node::Dock { .. }) {
                             return Err(DockError::InvalidPlacement);

@@ -28,14 +28,18 @@ pub(in crate::docking) struct FrameState<P> {
     pub(super) windows: Vec<WindowHit<P>>,
 }
 
-/// The layout as shown: a maximized frame alone, and hidden panels left out.
+/// The layout as shown: a maximized frame alone, and hidden panels left out. `narrow` narrows
+/// the outer edge area to the canvas column ([`Layout::edge_path`]).
 pub(in crate::docking) fn view<'a, P: Clone + Eq + Hash>(
     layout: &'a Layout<P>,
     maximized: Option<&P>,
     hide: HidePanels<'_, P>,
     content: &dyn DockContent<P>,
+    narrow: bool,
 ) -> (Cow<'a, Layout<P>>, FrameState<P>) {
     let protected = |p: &P| content.permissions(p).is_protected();
+    // The edge area narrows to the canvas column without side edge zones.
+    let canvas = |p: &P| narrow && protected(p);
     let hidden = |p: &P| match hide {
         HidePanels::None => false,
         HidePanels::All => !protected(p),
@@ -52,7 +56,7 @@ pub(in crate::docking) fn view<'a, P: Clone + Eq + Hash>(
     });
     let mut state = FrameState { paths: None, window_paths: HashMap::new(), edge_path: None, edge: None, maximized: None, windows: Vec::new() };
     if maximized.is_none() && matches!(hide, HidePanels::None) {
-        state.edge_path = Some(layout.edge_path());
+        state.edge_path = Some(layout.edge_path(&canvas));
         return (Cow::Borrowed(layout), state);
     }
     let mut paths = HashMap::new();
@@ -77,7 +81,7 @@ pub(in crate::docking) fn view<'a, P: Clone + Eq + Hash>(
         }
     };
     if state.maximized.is_none() {
-        state.edge_path = Some(view.edge_path());
+        state.edge_path = Some(view.edge_path(&canvas));
     }
     state.paths = Some(paths);
     (Cow::Owned(view), state)
@@ -166,21 +170,25 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         paths.and_then(|paths| paths.get(path).cloned()).unwrap_or_else(|| path.to_vec())
     }
 
-    /// The outer edge band under the pointer (P8): top and bottom, and left and right with
+    /// The outer edge band under the pointer (P8): the sides of
+    /// [`crate::docking::DockStyle::drop_edges`], all four with
     /// [`crate::docking::DockStyle::side_edge_zones`]. Returns a docked anchor that is not
-    /// moving, the zone and the preview: a line along the layout's whole edge, or with side edge
-    /// zones the quarter the new frame takes. Without them, on a tab strip that takes tabs, the band reaches
-    /// only [`crate::docking::targets::STRIP_REACH`] from the line.
+    /// moving, the zone and the preview: a line along the edge area's whole edge, or with side
+    /// edge zones the quarter the new frame takes. Without them, on a tab strip that takes tabs,
+    /// the band reaches only [`crate::docking::targets::STRIP_REACH`] from the line.
     pub(super) fn edge_proposal(&self, members: &[P], pointer: Pos2) -> Option<(P, Zone, Rect)> {
         let area = self.frame.edge.filter(|area| area.contains(pointer))?;
         let band = if self.style.side_edge_zones { crate::docking::targets::SIDE_EDGE_BAND } else { self.style.edge_band };
         let band = band.min(area.width() / 4.0).min(area.height() / 4.0);
         let line = |zone| crate::docking::targets::edge_line(area, zone, self.style.drop_line_width);
-        let mut edges = vec![(pointer.y - area.top(), Zone::Top), (area.bottom() - pointer.y, Zone::Bottom)];
-        if self.style.side_edge_zones {
-            edges.extend([(pointer.x - area.left(), Zone::Left), (area.right() - pointer.x, Zone::Right)]);
-        }
-        let (distance, zone) = edges.into_iter().min_by(|a, b| a.0.total_cmp(&b.0))?;
+        let sides = self.style.drop_sides();
+        let edges = [
+            (pointer.y - area.top(), Zone::Top),
+            (area.bottom() - pointer.y, Zone::Bottom),
+            (pointer.x - area.left(), Zone::Left),
+            (area.right() - pointer.x, Zone::Right),
+        ];
+        let (distance, zone) = edges.into_iter().filter(|(_, zone)| sides.contains(*zone)).min_by(|a, b| a.0.total_cmp(&b.0))?;
         if distance > band {
             return None;
         }
@@ -188,8 +196,17 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         if !self.style.side_edge_zones && self.in_tab_strip(pointer) && !line(zone).is_some_and(reach) {
             return None;
         }
-        let anchor =
-            self.layout.panels().into_iter().find(|p| !members.contains(p) && !matches!(self.place(p), Some(Place::Floating { .. }) | None))?.clone();
+        // A protected anchor narrows the model's edge to the canvas column, as `edge_path`
+        // narrows the band without side edge zones.
+        let narrow = !self.style.side_edge_zones;
+        let docked: Vec<&P> = self
+            .layout
+            .panels()
+            .into_iter()
+            .filter(|p| !members.contains(p) && !matches!(self.place(p), Some(Place::Floating { .. }) | None))
+            .collect();
+        let anchor = docked.iter().find(|p| self.permissions(p).is_protected() == narrow).or(docked.first())?;
+        let anchor = (*anchor).clone();
         if !self.style.side_edge_zones {
             return Some((anchor, zone, line(zone)?));
         }

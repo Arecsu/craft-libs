@@ -8,7 +8,7 @@ use crate::docking::{
     Action, Drag, DropProposal, DropRequest, DropTarget, GroupDrag, GroupGesture, Layout, Node, Placement, Target, Zone, cancel_drag,
     dock_model::Place,
     surface::TAB_PADDING,
-    targets::{SIDE_EDGE_ZONE_DEPTH, resolve_drop_by},
+    targets::{SIDE_EDGE_ZONE_DEPTH, resolve_drop_on},
 };
 use crate::layout::SplitAxis;
 
@@ -186,11 +186,12 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         (proposal.noop || self.layout.clone().apply_with_permissions(group_action(drag, to), |p| self.permissions(p)).is_ok()).then_some(proposal)
     }
 
-    /// [`crate::docking::resolve_drop_by`] with [`crate::docking::DockStyle::zone_rule`], where a split that would leave
+    /// [`crate::docking::resolve_drop_by`] with [`crate::docking::DockStyle::zone_rule`] and the
+    /// canvas sides of [`crate::docking::DockStyle::drop_edges`], where a split that would leave
     /// a group without room becomes a join of the target group, or no target when the group
     /// takes no tabs.
     fn resolve_roomy(&self, panel: &P, pointer: Pos2, targets: &[DropTarget<P>], action: impl Fn(Target<P>) -> Action<P>) -> Option<DropProposal<P>> {
-        let proposal = resolve_drop_by(panel, pointer, targets, self.style.zone_rule())?;
+        let proposal = resolve_drop_on(panel, pointer, targets, self.style.zone_rule(), self.style.drop_sides())?;
         if !matches!(proposal.placement, Placement::Split(zone) if zone != Zone::Center) {
             return Some(proposal);
         }
@@ -198,7 +199,13 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             return Some(proposal);
         }
         let target = targets.iter().rev().find(|t| crate::docking::targets::usable(t.rect) && t.rect.contains(pointer))?;
-        resolve_drop_by(panel, pointer, std::slice::from_ref(&DropTarget { allow_splits: false, ..target.clone() }), self.style.zone_rule())
+        resolve_drop_on(
+            panel,
+            pointer,
+            std::slice::from_ref(&DropTarget { allow_splits: false, ..target.clone() }),
+            self.style.zone_rule(),
+            self.style.drop_sides(),
+        )
     }
 
     /// Whether `action`, a drop that splits a group or the outer edge, leaves room: every group
