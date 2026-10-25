@@ -188,7 +188,7 @@ fn mixed_orientations_turn_to_the_first_sheets() {
         let sheets = read(&pdf).unwrap();
         let edits = plan(&sheets.sheets, (612.0, 792.0), Fit::Exact).unwrap();
         assert_eq!(edits.len(), 1, "only the landscape sheet changes");
-        let updated = sheets.update(&edits, None).unwrap();
+        let updated = sheets.update(&edits).unwrap();
         assert!(updated.starts_with(&pdf), "an incremental update: the original bytes stay as they were");
         assert_eq!(
             shapes(&updated),
@@ -205,13 +205,13 @@ fn mixed_orientations_turn_to_the_first_sheets() {
     // A landscape first sheet makes it a landscape job: the portrait sheets turn the other way.
     let pdf = test_pdf(&[LETTER_LANDSCAPE, TestPage { rotate: Some(180), ..LETTER }], false);
     let sheets = read(&pdf).unwrap();
-    let updated = sheets.update(&plan(&sheets.sheets, (792.0, 612.0), Fit::Exact).unwrap(), None).unwrap();
+    let updated = sheets.update(&plan(&sheets.sheets, (792.0, 612.0), Fit::Exact).unwrap()).unwrap();
     assert_eq!(shapes(&updated), [((792, 612), 0), ((792, 612), 270)], "180 + 90");
     // One shape already: nothing to do, and the job is the PDF as it came.
     let pdf = test_pdf(&[LETTER, LETTER], true);
     let sheets = read(&pdf).unwrap();
     assert!(plan(&sheets.sheets, (612.0, 792.0), Fit::Exact).unwrap().is_empty());
-    assert_eq!(sheets.update(&[], None).unwrap(), pdf);
+    assert_eq!(sheets.update(&[]).unwrap(), pdf);
 }
 
 #[test]
@@ -235,7 +235,7 @@ fn shrink_to_fit_reframes_sheets_on_the_paper() {
     let pdf = test_pdf(&[TABLOID], true);
     let sheets = read(&pdf).unwrap();
     let edits = plan(&sheets.sheets, (612.0, 792.0), Fit::Shrink { margin: 18.0 }).unwrap();
-    let updated = sheets.update(&edits, None).unwrap();
+    let updated = sheets.update(&edits).unwrap();
     assert_eq!(shapes(&updated), [((612, 792), 0)]);
     assert_eq!(frame_of(&updated, pdf.len()), "q 0.6176 0 0 0.6176 61.4118 18 cm 0 0 792 1224 re W n");
     let tail = String::from_utf8_lossy(&updated[pdf.len()..]).into_owned();
@@ -252,7 +252,7 @@ fn shrink_to_fit_reframes_sheets_on_the_paper() {
     assert_eq!(edits[0].frame.as_ref().unwrap().matrix, [1.0, 0.0, 0.0, 1.0, 126.0, 144.0], "never enlarged");
     assert_eq!(edits[1].frame.as_ref().unwrap().matrix, [1.0, 0.0, 0.0, 1.0, 56.0, 96.0]);
     assert_eq!(edits[1].frame.as_ref().unwrap().clip, [100.0, 100.0, 300.0, 400.0]);
-    assert_eq!(shapes(&sheets.update(&edits, None).unwrap()), [((612, 792), 0), ((612, 792), 0)]);
+    assert_eq!(shapes(&sheets.update(&edits).unwrap()), [((612, 792), 0), ((612, 792), 0)]);
 
     // The paper's own size: shrunk into the printable area when the printer has margins, as
     // CUPS' auto-fit does, and left alone when it prints to the edge.
@@ -268,7 +268,7 @@ fn shrink_to_fit_reframes_sheets_on_the_paper() {
     let edits = plan(&sheets.sheets, (612.0, 792.0), Fit::Shrink { margin: 0.0 }).unwrap();
     assert_eq!(edits.iter().map(|e| (e.sheet, e.rotate)).collect::<Vec<_>>(), [(1, 270), (2, 0)]);
     assert_eq!(edits[0].frame.as_ref().unwrap().media, (792.0, 612.0), "the paper in the page's unrotated space");
-    assert_eq!(shapes(&sheets.update(&edits, None).unwrap()), [((612, 792), 0), ((612, 792), 270), ((612, 792), 0)]);
+    assert_eq!(shapes(&sheets.update(&edits).unwrap()), [((612, 792), 0), ((612, 792), 270), ((612, 792), 0)]);
 }
 
 #[test]
@@ -278,9 +278,9 @@ fn shrink_to_fit_refuses_to_drop_annotation_appearances() {
         let pdf = test_pdf_with_annotations(&[LETTER, LETTER_LANDSCAPE], false, Some(annotations));
         let sheets = read(&pdf).unwrap();
         let fit = plan(&sheets.sheets, (612.0, 792.0), Fit::Shrink { margin: 18.0 }).unwrap();
-        assert!(matches!(sheets.update(&fit, None), Err(Error::Spool(ref m)) if m.contains("flatten page annotations")));
+        assert!(matches!(sheets.update(&fit), Err(Error::Spool(ref m)) if m.contains("flatten page annotations")));
         let exact = plan(&sheets.sheets, (612.0, 792.0), Fit::Exact).unwrap();
-        let rotated = sheets.update(&exact, None).unwrap();
+        let rotated = sheets.update(&exact).unwrap();
         assert!(rotated.starts_with(&pdf));
         assert!(String::from_utf8_lossy(&rotated[pdf.len()..]).contains("/Annots"), "rotation retains annotations on the updated page");
     }
@@ -288,7 +288,7 @@ fn shrink_to_fit_refuses_to_drop_annotation_appearances() {
         let pdf = test_pdf_with_annotations(&[LETTER, LETTER_LANDSCAPE], false, Some(annotations));
         let sheets = read(&pdf).unwrap();
         let fit = plan(&sheets.sheets, (612.0, 792.0), Fit::Shrink { margin: 18.0 }).unwrap();
-        assert!(sheets.update(&fit, None).is_ok());
+        assert!(sheets.update(&fit).is_ok());
     }
 }
 
@@ -315,11 +315,11 @@ fn an_encrypted_file_is_turned_but_not_reframed() {
     let encrypted = replaced(&pdf, "/Root 1 0 R >>", "/Root 1 0 R /Encrypt << /Filter /Standard >> >>");
     let sheets = crate::sheets::read(&encrypted).unwrap();
     let turned = crate::sheets::plan(&sheets.sheets, (612.0, 792.0), crate::sheets::Fit::Exact).unwrap();
-    let updated = sheets.update(&turned, None).unwrap();
+    let updated = sheets.update(&turned).unwrap();
     assert_eq!(shapes(&updated), [((612, 792), 0), ((612, 792), 270)]);
     assert!(String::from_utf8_lossy(&updated[encrypted.len()..]).contains("/Encrypt"), "the new trailer keeps /Encrypt");
     let shrunk = crate::sheets::plan(&sheets.sheets, (612.0, 792.0), crate::sheets::Fit::Shrink { margin: 18.0 }).unwrap();
-    assert!(matches!(sheets.update(&shrunk, None), Err(Error::Spool(ref m)) if m.contains("encrypted")));
+    assert!(matches!(sheets.update(&shrunk), Err(Error::Spool(ref m)) if m.contains("encrypted")));
 }
 
 #[test]
@@ -348,7 +348,7 @@ fn unreadable_sheets_are_errors_never_panics() {
             if let Ok(sheets) = crate::sheets::read(&v)
                 && let Ok(edits) = crate::sheets::plan(&sheets.sheets, (612.0, 792.0), crate::sheets::Fit::Shrink { margin: 18.0 })
             {
-                let _ = sheets.update(&edits, None);
+                let _ = sheets.update(&edits);
             }
         }
     }

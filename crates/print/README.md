@@ -89,9 +89,9 @@ colour option, uncollated copies on one that can't collate. Two-sided on such a 
 refused. Windows doesn't document collating for a driver that can't collate, so collated copies
 on one are a single job of one copy that holds the document's pages once per copy; on two-sided
 paper an odd page count gets a blank page after each copy but the last, so every copy starts on
-a sheet of its own. Pages with annotations and encrypted PDFs can't be repeated and are refused,
-and so are queues set to print several pages per sheet, to bind, or to a two-sided option outside
-the Print Schema's.
+a sheet of its own. Where one job would print the copies wrongly or can't hold them (pages with
+annotations, an encrypted PDF, a very large job, a queue set to several pages per sheet, binding,
+stapling or a two-sided option outside the Print Schema's), each copy is a job of its own.
 Without an explicit duplex request, the queue default applies. Without a grayscale request the
 ticket names no colour, so the colour in the user's printing preferences (Properties…, or
 Windows Settings) applies, black and white included. Single-page or single-copy jobs have no

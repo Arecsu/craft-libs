@@ -989,7 +989,7 @@ pub(crate) fn read(data: &[u8]) -> Result<Sheets<'_>, Error> {
         // looked at: resolving a shared Resources dictionary for every page would parse it again.
         let own_resources = match get(&dict, b"Resources") {
             None | Some(Obj::Null) => false,
-            Some(Obj::Ref(num, _)) => reader.entries.contains_key(num),
+            Some(Obj::Ref(num, _)) => matches!(reader.entries.get(num), Some(Entry::At(_) | Entry::In(..))),
             Some(_) => true,
         };
         let resources = if own_resources { None } else { parent_resources };
@@ -1102,13 +1102,6 @@ pub(crate) struct Repeat {
     pub(crate) two_sided: bool,
 }
 
-/// Collated copies that can't be made by [`Repeat`], and why.
-pub(crate) fn not_repeated(why: &str) -> Error {
-    Error::Spool(format!(
-        "the printer's driver can't collate copies, and they can't be repeated in one job: {why}; nothing was sent (turn collation off, or print one copy at a time)"
-    ))
-}
-
 fn has_annotations(dict: &Dict) -> bool {
     get(dict, b"Annots").is_some_and(|a| !matches!(a, Obj::Null) && !matches!(a, Obj::Array(items) if items.is_empty()))
 }
@@ -1141,11 +1134,24 @@ impl Sheets<'_> {
     /// reframed page wraps its own in, and a cross-reference section of the same kind as the
     /// newest one, chained to it with `/Prev`.
     ///
-    /// With `repeat`, the edited pages are not written in place: the update adds a page tree of
-    /// its own, every copy's pages as new page objects that share the original content and
-    /// resources, and a new version of the catalog pointing to it. Each new page carries the
-    /// boxes, rotation and resources it inherited, since its parent is the new tree.
-    pub(crate) fn update(&self, edits: &[Edit], repeat: Option<Repeat>) -> Result<Vec<u8>, Error> {
+    pub(crate) fn update(&self, edits: &[Edit]) -> Result<Vec<u8>, Error> {
+        // Only a repeat can be turned down, so there is always a PDF.
+        Ok(self.write(edits, None)?.unwrap_or_else(|| self.data.to_vec()))
+    }
+
+    /// [`update`](Self::update) with every copy of `repeat` in the one PDF. The edited pages
+    /// are not written in place: the update adds a page tree of its own, every copy's pages as
+    /// new page objects that share the original content and resources, and a new version of
+    /// the catalog pointing to it. Each new page carries the boxes, rotation and resources it
+    /// inherited, since its parent is the new tree. `None` when the copies can't be one PDF:
+    /// the PDF is encrypted (strings are encrypted with keys made from their object's number),
+    /// a page has annotations (an annotation belongs to one page; whether a renderer draws it on
+    /// others is unknown), or the job would be too large.
+    pub(crate) fn repeated(&self, edits: &[Edit], repeat: Repeat) -> Result<Option<Vec<u8>>, Error> {
+        self.write(edits, Some(repeat))
+    }
+
+    fn write(&self, edits: &[Edit], repeat: Option<Repeat>) -> Result<Option<Vec<u8>>, Error> {
         let refuse = |why: &str| Error::Spool(format!("the print-ready PDF can't be fitted to the paper: {why}"));
         let mut out = self.data.to_vec();
         if !out.ends_with(b"\n") {
@@ -1220,27 +1226,18 @@ impl Sheets<'_> {
             }
         }
         if let Some(Repeat { copies, two_sided }) = repeat {
-            let refuse = not_repeated;
-            // Strings are encrypted with keys made from their object's number; a page copied
-            // to a new number would lose them.
-            if get(&self.trailer, b"Encrypt").is_some() {
-                return Err(refuse("the PDF is encrypted"));
-            }
-            // An annotation belongs to one page; whether a renderer draws it on others is unknown.
-            if self.sheets.iter().any(|s| s.annotated) {
-                return Err(refuse("flatten page annotations first"));
+            let refuse = |why: &str| Error::Spool(format!("the copies can't be written: {why}"));
+            if get(&self.trailer, b"Encrypt").is_some() || self.sheets.iter().any(|s| s.annotated) {
+                return Ok(None);
             }
             let Some(&Obj::Ref(root, root_generation)) = get(&self.trailer, b"Root") else {
-                return Err(refuse("the document catalog is not an object of its own"));
+                return Ok(None);
             };
             let blank = two_sided && self.sheets.len() % 2 == 1;
             let per_copy = self.sheets.len() + usize::from(blank);
-            let count = usize::try_from(copies)
-                .ok()
-                .and_then(|c| per_copy.checked_mul(c))
-                .map(|n| n - usize::from(blank))
-                .filter(|&n| n <= MAX_PAGES)
-                .ok_or_else(|| refuse("too many pages"))?;
+            let count =
+                usize::try_from(copies).ok().and_then(|c| per_copy.checked_mul(c)).map(|n| n - usize::from(blank)).filter(|&n| n <= MAX_PAGES);
+            let Some(count) = count else { return Ok(None) };
             let tree = next;
             next = next.checked_add(1).ok_or_else(|| refuse("too many objects"))?;
             let parent = (b"Parent".to_vec(), Obj::Ref(tree, 0));
@@ -1281,7 +1278,7 @@ impl Sheets<'_> {
                                 out.extend_from_slice(b"\nendobj\n");
                                 once += out.len() - at;
                                 if !within(once, each) {
-                                    return Err(refuse("the pages are too large to repeat"));
+                                    return Ok(None);
                                 }
                                 shared.insert(Arc::as_ptr(resources), Obj::Ref(num, 0));
                                 Obj::Ref(num, 0)
@@ -1296,7 +1293,7 @@ impl Sheets<'_> {
                 write_dict(&mut body, &dict);
                 each += body.len() + 64;
                 if !within(once, each) {
-                    return Err(refuse("the pages are too large to repeat"));
+                    return Ok(None);
                 }
                 bodies.push(body);
                 last = dict;
@@ -1338,7 +1335,7 @@ impl Sheets<'_> {
             out.extend_from_slice(b"\nendobj\n");
         }
         if written.is_empty() {
-            return Ok(self.data.to_vec());
+            return Ok(Some(self.data.to_vec()));
         }
         written.sort_by_key(|(num, _, _)| *num);
         let mut trailer: Dict = Vec::new();
@@ -1385,7 +1382,7 @@ impl Sheets<'_> {
             write_dict(&mut out, &trailer);
             out.extend_from_slice(format!("\nstartxref\n{at}\n%%EOF\n").as_bytes());
         }
-        Ok(out)
+        Ok(Some(out))
     }
 }
 

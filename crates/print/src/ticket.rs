@@ -217,11 +217,13 @@ pub(crate) fn repeats_collated(job: &Job, pages: usize, offered: Offered) -> boo
     collated_copies(job, pages) && offered.collate == Some(false)
 }
 
-/// Whether the validated one-copy ticket of a repeated job ([`crate::sheets::Repeat`]) prints on
-/// both sides. Refused when the copies would not each start on a sheet of their own: a duplex
-/// option other than the schema's, several pages per sheet, or binding (booklets included).
-pub(crate) fn repeated_sides(xml: &str) -> Result<bool, Error> {
-    let document = roxmltree::Document::parse(xml).map_err(spool_error)?;
+/// Whether a repeated job's validated one-copy ticket ([`crate::sheets::Repeat`]) prints on
+/// both sides; `None` when the copies can't share one job and are printed as a job each: a
+/// duplex option other than the schema's (the blank backs would be guessed), several pages per
+/// sheet, binding (booklets and offset stacking included) or stapling, which would treat every
+/// copy as one document.
+pub(crate) fn one_job_sides(xml: &str) -> Option<bool> {
+    let document = roxmltree::Document::parse(xml).ok()?;
     let features = |names: &'static [&'static str]| {
         document.root_element().children().filter(move |n| n.has_tag_name((NS_PSF, "Feature")) && names.iter().any(|name| named(*n, name)))
     };
@@ -233,16 +235,18 @@ pub(crate) fn repeated_sides(xml: &str) -> Result<bool, Error> {
         match option(feature) {
             Some(o) if named(o, "OneSided") => {}
             Some(o) if named(o, "TwoSidedLongEdge") || named(o, "TwoSidedShortEdge") => two_sided = true,
-            _ => return Err(crate::sheets::not_repeated("the queue's two-sided setting is not one of the standard ones")),
+            _ => return None,
         }
     }
     if features(&["JobNUpAllDocumentsContiguously", "DocumentNUp"]).any(|f| integer(f, "ScoredProperty", "PagesPerSheet").is_some_and(|n| n > 1)) {
-        return Err(crate::sheets::not_repeated("the queue prints several pages per sheet"));
+        return None;
     }
-    if features(&["JobBindAllDocuments", "DocumentBinding"]).any(|f| !option(f).is_some_and(|o| named(o, "None"))) {
-        return Err(crate::sheets::not_repeated("the queue binds the pages"));
+    if features(&["JobBindAllDocuments", "DocumentBinding", "JobStapleAllDocuments", "DocumentStaple"])
+        .any(|f| !option(f).is_some_and(|o| named(o, "None")))
+    {
+        return None;
     }
-    Ok(two_sided)
+    Some(two_sided)
 }
 
 /// Confirm explicit job options survived driver validation. Collation only changes output
@@ -256,8 +260,8 @@ pub(crate) fn repeated_sides(xml: &str) -> Result<bool, Error> {
 /// driver is refused, and so are collated copies on a driver that can't collate: Windows doesn't
 /// document collating for such a driver (the standard XPS filters make the copies, and leave
 /// collated copies to the device only when its GPD or PPD has a Collate command). The job then
-/// repeats the document instead ([`repeats_collated`]) and asks for one copy. An unknown offer
-/// (`None`) is checked strictly.
+/// asks for one copy and repeats the document instead ([`repeats_collated`]), in one job or a
+/// job per copy ([`one_job_sides`]). An unknown offer (`None`) is checked strictly.
 pub(crate) fn verify_job_options(xml: &str, job: &Job, pages: usize, offered: Offered) -> Result<(), Error> {
     let document = roxmltree::Document::parse(xml).map_err(spool_error)?;
     let root = document.root_element();
@@ -629,23 +633,25 @@ mod tests {
     }
 
     #[test]
-    fn a_repeated_job_reads_its_sides_and_refuses_layouts_that_mix_copies() {
+    fn a_repeated_job_reads_its_sides_and_leaves_layouts_that_mix_copies_to_separate_jobs() {
         let xml = ticket_xml(&Job { duplex: Some(Duplex::LongEdge), ..Job::default() }, false);
-        assert!(repeated_sides(&xml).unwrap());
-        assert!(repeated_sides(&xml.replace("JobDuplexAllDocumentsContiguously", "DocumentDuplex")).unwrap());
-        assert!(!repeated_sides(&ticket_xml(&Job { duplex: Some(Duplex::Off), ..Job::default() }, false)).unwrap());
-        assert!(!repeated_sides(&ticket_xml(&Job::default(), false)).unwrap(), "no duplex feature");
-        assert!(repeated_sides(&xml.replace("psk:TwoSidedLongEdge", "vendor:Duplex")).is_err(), "an option it can't read");
+        assert_eq!(one_job_sides(&xml), Some(true));
+        assert_eq!(one_job_sides(&xml.replace("JobDuplexAllDocumentsContiguously", "DocumentDuplex")), Some(true));
+        assert_eq!(one_job_sides(&ticket_xml(&Job { duplex: Some(Duplex::Off), ..Job::default() }, false)), Some(false));
+        assert_eq!(one_job_sides(&ticket_xml(&Job::default(), false)), Some(false), "no duplex feature");
+        assert_eq!(one_job_sides(&xml.replace("psk:TwoSidedLongEdge", "vendor:Duplex")), None, "an option it can't read");
         let with = |feature: &str| xml.replace("</psf:PrintTicket>", &format!("{feature}</psf:PrintTicket>"));
         let n_up = |n: u32| {
             with(&format!(
                 r#"<psf:Feature name="psk:JobNUpAllDocumentsContiguously"><psf:Option><psf:ScoredProperty name="psk:PagesPerSheet"><psf:Value xsi:type="xsd:integer">{n}</psf:Value></psf:ScoredProperty></psf:Option></psf:Feature>"#
             ))
         };
-        assert!(repeated_sides(&n_up(1)).is_ok());
-        assert!(repeated_sides(&n_up(2)).is_err());
-        let binding = |option: &str| with(&format!(r#"<psf:Feature name="psk:JobBindAllDocuments"><psf:Option name="psk:{option}"/></psf:Feature>"#));
-        assert!(repeated_sides(&binding("None")).is_ok());
-        assert!(repeated_sides(&binding("Booklet")).is_err());
+        assert_eq!(one_job_sides(&n_up(1)), Some(true));
+        assert_eq!(one_job_sides(&n_up(2)), None);
+        for feature in ["JobBindAllDocuments", "JobStapleAllDocuments", "DocumentStaple"] {
+            let finishing = |option: &str| with(&format!(r#"<psf:Feature name="psk:{feature}"><psf:Option name="psk:{option}"/></psf:Feature>"#));
+            assert_eq!(one_job_sides(&finishing("None")), Some(true), "{feature}");
+            assert_eq!(one_job_sides(&finishing("StapleTopLeft")), None, "{feature}");
+        }
     }
 }

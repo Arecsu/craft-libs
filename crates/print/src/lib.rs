@@ -484,8 +484,8 @@ pub fn submit(pdf: &[u8], job: &Job) -> Result<String, Error> {
 /// [`submit`] with Windows sheet-processing progress: `(processed, sheets)` before the first
 /// sheet and after each sheet is successfully added to the native print job. Counts refer to
 /// source PDF sheets, regardless of copies or duplex, except for collated copies on a driver
-/// that can't collate: the job then holds every copy's sheets, and counts them all. CUPS reports
-/// no progress.
+/// that can't collate: every copy's sheets are sent, in one job or a job per copy, and counted
+/// together. CUPS reports no progress.
 ///
 /// The callback runs synchronously on the thread calling this function, need not be `Send`,
 /// and should return promptly. It is never retained. All sheets processed is not terminal
