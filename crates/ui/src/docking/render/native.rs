@@ -164,6 +164,9 @@ struct Place {
     corrected: bool,
     /// Shown, as it opened or was last told.
     shown: bool,
+    /// The height of its bar while minimized, as it was last told. `known` keeps the expanded
+    /// size meanwhile.
+    collapsed: Option<f32>,
 }
 
 /// Whether two rects differ by more than rounding.
@@ -448,6 +451,9 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         let moving = |ctx: &Context| ctx.data(|d| d.get_temp::<WindowDrag>(drag_key)).is_some_and(|d| d.window == window.id);
         let info = ctx.input(|i| i.raw.viewports.get(&viewport).cloned());
         let frame = info.as_ref().and_then(content_of).map_or(Vec2::ZERO, |(_, frame)| frame);
+        // A minimized window shows its bar and what `floating_body` draws below it.
+        let collapsed = window.minimized.then(|| BAR_HEIGHT + self.minimized_body(window));
+        let shown = |[x, y, w, h]: [f32; 4]| [x, y, w, collapsed.unwrap_or(h)];
         let mut place = match ctx.data(|d| d.get_temp::<Place>(key)) {
             Some(mut place) => {
                 // The application changed the window's place (undo, reset, a reloaded layout):
@@ -456,7 +462,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
                     && let Some(native) = window.native.filter(|native| differs(*native, place.known))
                 {
                     let target = kept_reachable(native, &self.monitors);
-                    place_window(ctx, viewport, target, frame);
+                    place_window(ctx, viewport, shown(target), frame);
                     (place.known, place.pending) = (target, Some(now + MOVE_WAIT));
                 }
                 place
@@ -474,9 +480,22 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
                 };
                 seen.insert(window.id);
                 ctx.data_mut(|d| d.insert_temp(seen_key, seen));
-                Place { spawn, known: spawn, pending: Some(now + MOVE_WAIT), corrected: false, shown: true }
+                Place { spawn, known: spawn, pending: Some(now + MOVE_WAIT), corrected: false, shown: true, collapsed: None }
             }
         };
+        // Minimized or expanded: the window keeps its top-left corner and width, and its
+        // height is fixed while it shows only its bar.
+        // The limits go first: the OS clamps the new size to the limits it has.
+        if place.collapsed != collapsed {
+            let (min, max) = match collapsed {
+                Some(height) => (vec2(MIN_SIZE[0], height), vec2(1_000_000.0, height)),
+                None => (Vec2::from(MIN_SIZE), Vec2::INFINITY),
+            };
+            ctx.send_viewport_cmd_to(viewport, ViewportCommand::MinInnerSize(min));
+            ctx.send_viewport_cmd_to(viewport, ViewportCommand::MaxInnerSize(max));
+            place_window(ctx, viewport, shown(place.known), frame);
+            (place.collapsed, place.pending) = (collapsed, Some(now + MOVE_WAIT));
+        }
         let spawn = place.spawn;
         let title = crate::docking::dock_model::first_active(&window.root).map(|p| self.label_of(p)).unwrap_or_default();
         let builder = ViewportBuilder::default()
@@ -599,7 +618,9 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             let opacity = if this { drag_opacity(drag.as_ref(), float_only, self.style.title_bar_docks) } else { 1.0 };
             set_window_opacity(&title, main.as_deref(), opacity);
         }
-        if let Some(placed) = report.placed.filter(|_| !moving) {
+        // The collapsed height a minimized window reports is not the size to keep.
+        let reported = report.placed.map(|[x, y, w, h]| [x, y, w, if place.collapsed.is_some() { place.known[3] } else { h }]);
+        if let Some(placed) = reported.filter(|_| !moving) {
             let waiting = place.pending.is_some_and(|until| now < until);
             if !differs(placed, place.known) {
                 place.pending = None;

@@ -39,13 +39,17 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
     pub(super) fn window_limits(&self, window: &Floating<P>) -> PanelLimits {
         let chrome = self.window_chrome(window);
         let tree = node_limits(&window.root, self.style, &*self.content);
-        let body = match (&window.root, window.minimized) {
-            (Node::Tabs { .. }, true) => (self.style.tab_height, self.style.tab_height),
-            (_, true) => (0.0, 0.0),
-            (_, false) => (tree.min.y, tree.max.y),
+        let body = match window.minimized {
+            true => (self.minimized_body(window), self.minimized_body(window)),
+            false => (tree.min.y, tree.max.y),
         };
         let min = vec2(tree.min.x, chrome + body.0).min(vec2(1_000_000.0, 1_000_000.0));
         PanelLimits { min, max: vec2(tree.max.x, chrome + body.1).max(min).min(vec2(1_000_000.0, 1_000_000.0)) }
+    }
+
+    /// The height of a minimized window's body: the tab strip of its only group, or nothing.
+    pub(super) fn minimized_body(&self, window: &Floating<P>) -> f32 {
+        if matches!(window.root, Node::Tabs { .. }) { self.style.tab_height } else { 0.0 }
     }
 
     /// The title bar and, for a movable (resizable) window, the resize band above it.

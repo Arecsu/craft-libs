@@ -328,6 +328,62 @@ fn a_restored_window_opens_on_a_connected_monitor() {
     assert_eq!(window(&d, 5).monitor.as_ref().and_then(|m| m.name.as_deref()), Some("left"));
 }
 
+/// The last `InnerSize`, `MinInnerSize` and `MaxInnerSize` sent to `viewport`.
+fn size_commands(d: &DockDriver<u32, Content>, viewport: egui::ViewportId) -> [Option<egui::Vec2>; 3] {
+    let mut sizes = [None; 3];
+    for (_, c) in d.host().commands.iter().filter(|(v, _)| *v == viewport) {
+        match c {
+            ViewportCommand::InnerSize(s) => sizes[0] = Some(*s),
+            ViewportCommand::MinInnerSize(s) => sizes[1] = Some(*s),
+            ViewportCommand::MaxInnerSize(s) => sizes[2] = Some(*s),
+            _ => {}
+        }
+    }
+    sizes
+}
+
+#[test]
+fn a_minimized_native_window_shrinks_to_its_bar_and_keeps_its_expanded_size() {
+    let mut d = driver(layout(true));
+    let viewport = d.viewport(window(&d, 5).id);
+    let open = os_window(&d, 5).unwrap().0;
+    let (native, rect) = (window(&d, 5).native, window(&d, 5).rect);
+    assert_eq!(native, Some([open.left(), open.top(), 240.0, 300.0]));
+
+    // Its bar and its group's tab strip, at the same width and top-left corner; only the width
+    // resizes.
+    let collapsed = BAR + super::DockStyle::default().tab_height;
+    d.layout.apply(Action::SetMinimized { panel: 5, minimized: true }).unwrap();
+    d.settle();
+    assert_eq!(os_window(&d, 5).unwrap().0, Rect::from_min_size(open.min, vec2(240.0, collapsed)));
+    let [_, min, max] = size_commands(&d, viewport);
+    assert_eq!((min.map(|s| s.y), max.map(|s| s.y)), (Some(collapsed), Some(collapsed)));
+
+    // The layout keeps the expanded size after the window reports the collapsed one, past the
+    // wait for commanded moves, and takes a new width.
+    for _ in 0..40 {
+        d.step(vec![]);
+    }
+    assert_eq!((window(&d, 5).native, window(&d, 5).rect), (native, rect));
+    d.host().windows.get_mut(&viewport).unwrap().rect = Rect::from_min_size(open.min, vec2(300.0, collapsed));
+    for _ in 0..40 {
+        d.step(vec![]);
+    }
+    assert_eq!(window(&d, 5).native, Some([open.left(), open.top(), 300.0, 300.0]));
+    assert_eq!(window(&d, 5).rect[2..], [300.0, 300.0]);
+
+    // Expanded: the saved height comes back, and the height resizes again.
+    d.layout.apply(Action::SetMinimized { panel: 5, minimized: false }).unwrap();
+    d.settle();
+    assert_eq!(os_window(&d, 5).unwrap().0, Rect::from_min_size(open.min, vec2(300.0, 300.0)));
+    assert_eq!(size_commands(&d, viewport), [Some(vec2(300.0, 300.0)), Some(vec2(160.0, 100.0)), Some(egui::Vec2::INFINITY)]);
+    // The limits change before the size: the OS clamps a new size to the limits it has.
+    let commands: Vec<_> = d.host().commands.iter().filter(|(v, _)| *v == viewport).map(|(_, c)| c.clone()).collect();
+    let last = |f: fn(&ViewportCommand) -> bool| commands.iter().rposition(f);
+    assert!(last(|c| matches!(c, ViewportCommand::MaxInnerSize(_))) < last(|c| matches!(c, ViewportCommand::InnerSize(_))), "{commands:?}");
+    assert_eq!(window(&d, 5).native, Some([open.left(), open.top(), 300.0, 300.0]));
+}
+
 #[test]
 fn a_locked_area_moves_no_native_window_and_records_where_the_os_put_it() {
     let mut d = driver(layout(true));
