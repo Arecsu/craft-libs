@@ -1,4 +1,4 @@
-use std::{fmt::Debug, hash::Hash};
+use std::{collections::HashMap, fmt::Debug, hash::Hash};
 
 use egui::{Color32, Context, FontId, Id, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
@@ -75,8 +75,11 @@ pub struct DockStyle {
     /// (one third, at most one half). The middle joins the group as a tab. Not used with
     /// [`Self::side_edge_zones`].
     pub side_zone_fraction: f32,
-    /// Width of the line a drop beside a group, column, dock or the layout's edge previews with
-    /// (4 pt, more than zero).
+    /// Width of the line that a drop between the icon groups of an iconic column, and every
+    /// dock drop with [`Self::side_edge_zones`], previews with, and of the line
+    /// [`crate::docking::ZoneRule::Fraction`] gives hosts as a side's preview (4 pt, more than
+    /// zero). Other drops beside a group, column, dock or the layout's edge preview the rect the
+    /// moved panels take. Border bands reach 4 pt past this line into a tab strip.
     pub drop_line_width: f32,
     /// [D] The docked area's left and right edges, where no dock is yet, take a drop as a new
     /// dock (see [`Self::new_dock_band`]).
@@ -1198,6 +1201,7 @@ impl<'a, P: Clone + Eq + Hash + Debug + Send + Sync + 'static> DockArea<'a, P> {
             targets: Vec::new(),
             dock_targets: Vec::new(),
             dock_groups: Vec::new(),
+            column_scroll: HashMap::new(),
             owned_interactions: Vec::new(),
             output: DockOutput::default(),
             frame,
