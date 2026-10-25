@@ -215,6 +215,13 @@ impl Updater {
 
     /// Draws the startup prompt and starts what it asks for.
     pub fn show(&mut self, ctx: &egui::Context) -> Action {
+        self.show_if(ctx, true)
+    }
+
+    /// Like [`Self::show`], but an installation only starts when `can_start` is true. An app passes
+    /// `false` while it holds unsaved work: the restart helper is scheduled before the app closes,
+    /// and a close that the user then cancels would leave it waiting for an exit that never comes.
+    pub fn show_if(&mut self, ctx: &egui::Context, can_start: bool) -> Action {
         if std::mem::take(&mut self.restart) {
             if let Some(prompt) = &mut self.prompt {
                 prompt.is_installing = false;
@@ -226,7 +233,7 @@ impl Updater {
         match prompt.show(ctx) {
             StartupPromptResponse::Pending => Action::None,
             StartupPromptResponse::UpdateAndRestart => {
-                self.start_install(ctx);
+                self.request_install(ctx, can_start);
                 Action::None
             }
             StartupPromptResponse::Download => {
@@ -239,6 +246,14 @@ impl Updater {
                 self.prompt = None;
                 Action::None
             }
+        }
+    }
+
+    fn request_install(&mut self, ctx: &egui::Context, can_start: bool) {
+        if can_start {
+            self.start_install(ctx);
+        } else if let Some(prompt) = &mut self.prompt {
+            prompt.status_message = Some("Save or close your open work first; the update restarts the app.".into());
         }
     }
 
@@ -420,6 +435,16 @@ mod tests {
         assert!(u.check.is_none(), "no check after an install");
         u.offer(newer());
         assert!(!u.prompt_open(), "no second offer after an install");
+    }
+
+    #[test]
+    fn an_install_waits_while_the_app_holds_unsaved_work() {
+        let ctx = egui::Context::default();
+        let mut u = updater(Ok(None));
+        u.offer(newer());
+        u.request_install(&ctx, false);
+        assert!(u.install.is_none(), "nothing is scheduled while there is unsaved work");
+        assert!(u.prompt.as_ref().is_some_and(|p| !p.is_installing && p.status_message.is_some()));
     }
 
     #[test]
