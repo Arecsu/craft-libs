@@ -91,15 +91,22 @@ impl Updater {
         self.begin(ctx, true);
     }
 
+    /// Opens the startup prompt for a release the app found itself.
+    pub fn offer(&mut self, release: Release) {
+        if self.install.is_none() {
+            self.prompt = Some(StartupPrompt::new(self.app, release, self.version.clone()));
+        }
+    }
+
     pub fn status(&self) -> &Status {
         &self.status
     }
 
-    /// Dismisses the outcome of a requested check.
+    /// Dismisses the outcome of a requested check. One still running carries on, and reports
+    /// like the check at start (a prompt if there is a release, otherwise nothing).
     pub fn dismiss_status(&mut self) {
-        if self.check.is_none() {
-            self.status = Status::Idle;
-        }
+        self.requested = false;
+        self.status = Status::Idle;
     }
 
     /// Whether the startup prompt is showing.
@@ -300,6 +307,15 @@ mod tests {
         settle(&mut u, &ctx);
         assert_eq!(u.status(), &Status::UpToDate);
         u.dismiss_status();
+        assert_eq!(u.status(), &Status::Idle);
+    }
+
+    #[test]
+    fn dismissing_a_running_check_keeps_it_quiet() {
+        let (ctx, mut u) = (egui::Context::default(), updater(Ok(None)));
+        u.check_now(&ctx);
+        u.dismiss_status();
+        settle(&mut u, &ctx);
         assert_eq!(u.status(), &Status::Idle);
     }
 
