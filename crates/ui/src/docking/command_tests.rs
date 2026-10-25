@@ -45,7 +45,7 @@ fn parse(params: Value) -> Result<DockCommand<P>, serde_json::Error> {
 /// The actions `params` makes on a fresh workspace.
 fn actions(params: Value) -> Vec<Action<P>> {
     let command = parse(params.clone()).unwrap_or_else(|e| panic!("{params}: {e}"));
-    command.to_actions(&workspace(), false, &space(), permissions).unwrap_or_else(|e| panic!("{params}: {e}"))
+    command.to_actions_with(&workspace(), false, &space(), permissions).unwrap_or_else(|e| panic!("{params}: {e}"))
 }
 
 /// Apply `params` to a fresh workspace; return it and the panels closed.
@@ -294,7 +294,7 @@ fn dock_commands_parse_every_documented_shape_and_map_to_atomic_actions() {
 fn side_zones_map_to_the_placement_the_anchor_container_takes_in_either_direction() {
     let command =
         |zone: &str, anchor: &str| parse(json!({"command": "window.panel.move", "panel": "history", "anchor": anchor, "zone": zone})).unwrap();
-    let placed = |zone: &str, anchor: &str, rtl: bool| match command(zone, anchor).to_actions(&workspace(), rtl, &space(), permissions) {
+    let placed = |zone: &str, anchor: &str, rtl: bool| match command(zone, anchor).to_actions_with(&workspace(), rtl, &space(), permissions) {
         Ok(actions) => match actions.as_slice() {
             [Action::Move { placement, .. }] => Ok(placement.clone()),
             other => panic!("{other:?}"),
@@ -338,7 +338,7 @@ fn float_without_a_rect_takes_the_drag_size_inside_the_dock_area() {
     let d = testing::DockDriver::new(workspace().layout, Sized).with_area(area);
     let space = float_space::<P>(&d.ctx, d.id).expect("the area records its float space");
     assert_eq!(space.area, area);
-    let float = |params: Value| parse(params).unwrap().to_actions(&workspace(), false, &space, permissions).unwrap();
+    let float = |params: Value| parse(params).unwrap().to_actions_with(&workspace(), false, &space, permissions).unwrap();
 
     let panel = float(json!({"command": "window.panel.float", "panel": "layers"}));
     // The floating_size width, and an empty body's least fitted height under its 150 points.
@@ -359,7 +359,7 @@ fn float_without_a_rect_takes_the_drag_size_inside_the_dock_area() {
 
     // Without recorded sizes a unit floats at the layout's size, shrunk into a small area.
     let small = FloatSpace::new(egui::Rect::from_min_size(egui::pos2(0.0, 30.0), egui::vec2(200.0, 200.0)));
-    let applied = parse(json!({"command": "window.panel.float", "panel": "layers", "group": true})).unwrap().to_actions(
+    let applied = parse(json!({"command": "window.panel.float", "panel": "layers", "group": true})).unwrap().to_actions_with(
         &workspace(),
         false,
         &small,
@@ -369,14 +369,15 @@ fn float_without_a_rect_takes_the_drag_size_inside_the_dock_area() {
 
     // A host seeds the size of a panel the area never drew; a recorded size still wins.
     let seeded = FloatSpace::new(area).with_panel_size(s("layers"), egui::vec2(180.0, 240.0));
-    let applied = parse(json!({"command": "window.panel.float", "panel": "layers"})).unwrap().to_actions(&workspace(), false, &seeded, permissions);
+    let applied =
+        parse(json!({"command": "window.panel.float", "panel": "layers"})).unwrap().to_actions_with(&workspace(), false, &seeded, permissions);
     assert_eq!(applied, Ok(vec![Action::Float { panel: s("layers"), rect: [24.0, 54.0, 180.0, 240.0] }]));
     let recorded = space.clone().with_panel_size(s("layers"), egui::vec2(180.0, 240.0));
     assert_eq!(float_with(&recorded, "layers"), vec![Action::Float { panel: s("layers"), rect: [24.0, 54.0, 200.0, 120.0] }]);
 }
 
 fn float_with(space: &FloatSpace<P>, panel: &str) -> Vec<Action<P>> {
-    parse(json!({"command": "window.panel.float", "panel": panel})).unwrap().to_actions(&workspace(), false, space, permissions).unwrap()
+    parse(json!({"command": "window.panel.float", "panel": panel})).unwrap().to_actions_with(&workspace(), false, space, permissions).unwrap()
 }
 
 #[test]
