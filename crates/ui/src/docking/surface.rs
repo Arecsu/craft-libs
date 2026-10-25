@@ -64,6 +64,12 @@ pub struct DockStyle {
     /// bottom edges add a full-width row, a group's zones are [`Self::side_zone_fraction`] of its
     /// body, and every preview is a line or a tab outline.
     pub side_edge_zones: bool,
+    /// Which sides of a group that takes no tabs (a canvas), and of the layout's outer edge, take
+    /// a drop (all four). Without [`Self::side_edge_zones`] the outer left and right edges are
+    /// new docks, so only top and bottom apply there. A dock-column app whose palettes dock only
+    /// at the left and right sets [`crate::docking::Sides::NONE`] with [`Self::new_dock_zones`]
+    /// on. Not used with [`Self::side_edge_zones`]. Groups that take tabs keep all four sides.
+    pub drop_edges: super::Sides,
     /// The share of a group's body, below the tab strip, that means "beside" on each side: of
     /// its width from the left and right edges, of its height from the top and bottom edges
     /// (one third, at most one half). The middle joins the group as a tab. Not used with
@@ -190,6 +196,7 @@ impl DockStyle {
             title_height: super::chrome::TITLE_HEIGHT,
             edge_band: 28.0,
             side_edge_zones: false,
+            drop_edges: super::Sides::ALL,
             side_zone_fraction: 1.0 / 3.0,
             drop_line_width: 4.0,
             new_dock_zones: true,
@@ -225,6 +232,19 @@ impl DockStyle {
             wheel_selects_tabs: false,
             middle_click_closes_tabs: false,
         }
+    }
+
+    /// The canvas sides [`Self::drop_edges`] gives in this profile: all four with
+    /// [`Self::side_edge_zones`].
+    pub(super) fn drop_sides(&self) -> super::Sides {
+        if self.side_edge_zones { super::Sides::ALL } else { self.drop_edges }
+    }
+
+    /// The outer edges that take a drop: all four with [`Self::side_edge_zones`], else the top
+    /// and bottom of [`Self::drop_edges`].
+    pub(super) fn outer_edges(&self) -> super::Sides {
+        let sides = self.drop_sides();
+        if self.side_edge_zones { sides } else { super::Sides { left: false, right: false, ..sides } }
     }
 
     /// How a group's body divides into drop zones: [`crate::docking::SIDE_EDGE_ZONE_DEPTH`] deep
@@ -343,9 +363,9 @@ const FLOAT_INSET: f32 = 24.0;
 #[cfg_attr(not(feature = "serde"), allow(dead_code))]
 pub(super) const DEFAULT_FLOAT: Vec2 = Vec2::new(260.0, 320.0);
 
-/// Where a docking command floats a panel, group or column when it gives no rect (see
-/// `DockCommand::to_actions`, feature `serde`). [`DockArea`] records one each frame; read it
-/// with [`float_space`].
+/// Where a docking command floats a panel, group or column when it gives no rect, and how the
+/// area draws its outer edge (see `DockCommand::to_actions`, feature `serde`). [`DockArea`]
+/// records one each frame; read it with [`float_space`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct FloatSpace<P> {
     /// The rect the area drew in. A floated unit goes inside it, 24 points from its top-left
@@ -358,13 +378,23 @@ pub struct FloatSpace<P> {
     /// The height each panel's content used when it was last drawn, which fits a floated group
     /// to its content; `None` for content that filled its body.
     pub(super) contents: Vec<(P, Option<f32>)>,
+    /// The area draws with [`DockStyle::side_edge_zones`]: an outer edge drop wraps the part
+    /// between the docks, never only the canvas column.
+    pub(super) side_edge_zones: bool,
 }
 
 impl<P: PartialEq> FloatSpace<P> {
     /// An area with no recorded sizes: commands float a panel at 260x320, and a group or
     /// column at its dock column's width (else 260) by 320.
     pub fn new(area: Rect) -> Self {
-        Self { area, panels: Vec::new(), groups: Vec::new(), columns: Vec::new(), contents: Vec::new() }
+        Self { area, panels: Vec::new(), groups: Vec::new(), columns: Vec::new(), contents: Vec::new(), side_edge_zones: false }
+    }
+
+    /// For an area drawn with [`DockStyle::side_edge_zones`] when the area has not drawn yet
+    /// (a headless run): an outer edge command then wraps what that profile's edge band wraps.
+    pub fn with_side_edge_zones(mut self, on: bool) -> Self {
+        self.side_edge_zones = on;
+        self
     }
 
     /// Adds the size a command floats `panel` at alone when the area has not drawn it, such as
@@ -476,51 +506,16 @@ fn cancel_drag_if_replaced<P: Clone + Eq + Hash + Debug + Send + Sync + 'static>
     }) else {
         return;
     };
-    let now = shape(layout);
-    if now == shape(&last.layout) {
+    let now = layout.shape();
+    if now == last.layout.shape() {
         return;
     }
     let mut applied = last.layout;
     for action in last.actions {
         let _ = applied.apply(action);
     }
-    if now != shape(&applied) {
+    if now != applied.shape() {
         cancel_drag::<P>(ctx, area);
-    }
-}
-
-/// `layout` without its sizes and rectangles: which panels are where, and their state.
-fn shape<P: Clone>(layout: &Layout<P>) -> Layout<P> {
-    use super::{Column, Floating, Group, Node, StackEntry};
-    use crate::layout::SplitSize;
-    fn node<P: Clone>(n: &Node<P>) -> Node<P> {
-        match n {
-            Node::Split { axis, first, second, .. } => {
-                Node::Split { axis: *axis, size: SplitSize::Ratio(0.5), first: Box::new(node(first)), second: Box::new(node(second)) }
-            }
-            Node::Tabs { panels, active } => Node::Tabs { panels: panels.clone(), active: *active },
-            Node::Stack { entries } => Node::Stack { entries: entries.iter().map(|e| StackEntry { height: None, ..e.clone() }).collect() },
-            Node::Dock { side, columns } => Node::Dock {
-                side: *side,
-                columns: columns
-                    .iter()
-                    .map(|c| Column {
-                        groups: c.groups.iter().map(|g| Group { height: None, ..g.clone() }).collect(),
-                        width: 0.0,
-                        iconic: c.iconic,
-                        iconic_width: None,
-                    })
-                    .collect(),
-            },
-        }
-    }
-    Layout {
-        root: layout.root.as_ref().map(node),
-        floating: layout
-            .floating
-            .iter()
-            .map(|w| Floating { root: node(&w.root), rect: [0.0; 4], native: None, monitor: None, monitor_size: None, ..w.clone() })
-            .collect(),
     }
 }
 
@@ -1183,7 +1178,7 @@ impl<'a, P: Clone + Eq + Hash + Debug + Send + Sync + 'static> DockArea<'a, P> {
         ui.ctx().data_mut(|d| d.insert_temp(blocked_key, self.input_blocked));
         cancel_drag_if_replaced(ui.ctx(), self.id, layout);
         release_moved_tab_focus(ui.ctx(), self.id, layout);
-        let (view, frame) = super::render::view(layout, self.maximized.as_ref(), self.hide, &*content);
+        let (view, frame) = super::render::view(layout, self.maximized.as_ref(), self.hide, &*content, !style.side_edge_zones);
         let places = layout.places();
         // A panel keeps the content height it last drew while hidden or minimized.
         let contents: Vec<(P, Option<f32>)> = float_space::<P>(ui.ctx(), self.id)
@@ -1207,7 +1202,7 @@ impl<'a, P: Clone + Eq + Hash + Debug + Send + Sync + 'static> DockArea<'a, P> {
             output: DockOutput::default(),
             frame,
             iconic: super::render::Iconic::new(self.auto_collapse),
-            float_space: FloatSpace { contents, ..FloatSpace::new(rect) },
+            float_space: FloatSpace { contents, side_edge_zones: style.side_edge_zones, ..FloatSpace::new(rect) },
             places,
             contents: content_index,
             dividers: Vec::new(),

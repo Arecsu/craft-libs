@@ -185,6 +185,25 @@ fn drag(h: &mut Harness<'_, App>, from: Pos2, to: Pos2) {
     h.run_steps(2);
 }
 
+/// The rect a docked pane's panel takes.
+fn panel(h: &Harness<'_, App>, pane: Pane) -> Rect {
+    egui::containers::panel::PanelState::load(&h.ctx, pane_id(pane).with("panel")).unwrap().outer_rect
+}
+
+/// The drop previews painted in the last frame: 2 pt accent outlines with a 15% accent fill.
+fn previews(h: &Harness<'_, App>) -> Vec<Rect> {
+    h.output()
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Rect(shape) if shape.stroke.width == 2.0 && shape.fill == shape.stroke.color.gamma_multiply(0.15) => {
+                Some(shape.rect.expand(1.0))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 fn key(h: &mut Harness<'_, App>, key: Key, modifiers: Modifiers) {
     send(h, vec![Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }]);
     h.run_steps(1);
@@ -343,6 +362,86 @@ fn title_dragged_out_floats_and_a_drop_near_an_edge_docks() {
     assert_eq!(edge(&h, Pane::Styles), R - 250.0);
     // The floating rect's size is kept for the next float.
     assert_eq!(h.state().states[&Pane::Styles].float_rect.map(|r| [r[2], r[3]]), Some([270.0, 480.0]));
+}
+
+#[test]
+fn a_floating_pane_near_a_side_edge_previews_the_column_it_docks_in() {
+    let mut app = App::new(&[Pane::Nav, Pane::Styles]);
+    app.states.insert(Pane::Styles, PaneState { place: Place::Floating, size: Some(300.0), float_rect: Some([300.0, 100.0, 270.0, 400.0]) });
+    let mut h = harness(app);
+    let from = title(&h, Pane::Styles).center();
+    hold(&mut h, from, pos2(400.0, 300.0));
+    assert!(previews(&h).is_empty(), "away from the edges");
+    let to = pos2(L + 10.0, 300.0);
+    send(&mut h, vec![Event::PointerMoved(to)]);
+    let landing = Rect::from_x_y_ranges(L + 250.0..=L + 550.0, 8.0..=592.0);
+    assert_eq!(previews(&h), vec![landing], "beside Nav, 300 pt wide");
+    send(&mut h, vec![button(to, false)]);
+    h.run_steps(2);
+    assert_eq!(h.state().place(Pane::Styles), Place::Docked(Edge::Start));
+    assert_eq!(panel(&h, Pane::Styles), landing);
+}
+
+#[test]
+fn a_docked_pane_dragged_across_previews_the_column_it_lands_in() {
+    let mut h = harness(App::new(&[Pane::Nav, Pane::Comments]));
+    let from = title(&h, Pane::Comments).center();
+    let to = pos2(L + 10.0, 300.0);
+    hold(&mut h, from, to);
+    let landing = Rect::from_x_y_ranges(L + 250.0..=L + 500.0, 8.0..=592.0);
+    assert_eq!(previews(&h), vec![landing], "right of Nav, which comes first in open");
+    send(&mut h, vec![button(to, false)]);
+    h.run_steps(2);
+    assert_eq!(h.state().place(Pane::Comments), Place::Docked(Edge::Start));
+    assert_eq!(panel(&h, Pane::Comments), landing);
+
+    // Right to left: Start is the right edge, and Nav stays outermost there.
+    let mut app = App::new(&[Pane::Nav, Pane::Comments]);
+    app.rtl = true;
+    let mut h = harness(app);
+    let from = title(&h, Pane::Comments).center();
+    let to = pos2(R - 10.0, 300.0);
+    hold(&mut h, from, to);
+    let landing = Rect::from_x_y_ranges(R - 500.0..=R - 250.0, 8.0..=592.0);
+    assert_eq!(previews(&h), vec![landing]);
+    send(&mut h, vec![button(to, false)]);
+    h.run_steps(2);
+    assert_eq!(panel(&h, Pane::Comments), landing);
+}
+
+#[test]
+fn one_slot_previews_a_pane_beside_the_context_pane() {
+    let mut app = App::new(&[Pane::Pivot, Pane::Styles]);
+    app.policy = SidePolicy::OneSlot;
+    let mut h = harness(app);
+    let from = title(&h, Pane::Styles).center();
+    let to = pos2(R - 10.0, 300.0);
+    hold(&mut h, from, to);
+    let landing = Rect::from_x_y_ranges(R - 500.0..=R - 250.0, 8.0..=592.0);
+    assert_eq!(previews(&h), vec![landing], "inside the Pivot pane, which comes first in open");
+    send(&mut h, vec![button(to, false)]);
+    h.run_steps(2);
+    assert_eq!(panel(&h, Pane::Styles), landing);
+}
+
+#[test]
+fn one_slot_previews_the_room_a_pane_it_reveals_leaves() {
+    // Nav and Styles share the start slot, so only Styles shows. Moved to the end, it reveals
+    // Nav, which takes 500 of the host's 784 pt.
+    let mut app = App::new(&[Pane::Nav, Pane::Styles]);
+    app.policy = SidePolicy::OneSlot;
+    for pane in [Pane::Nav, Pane::Styles] {
+        app.states.insert(pane, PaneState::docked(Edge::Start, 500.0));
+    }
+    let mut h = harness(app);
+    let from = title(&h, Pane::Styles).center();
+    let to = pos2(R - 10.0, 300.0);
+    hold(&mut h, from, to);
+    let landing = Rect::from_x_y_ranges(L + 500.0..=R, 8.0..=592.0);
+    assert_eq!(previews(&h), vec![landing]);
+    send(&mut h, vec![button(to, false)]);
+    h.run_steps(2);
+    assert_eq!(panel(&h, Pane::Styles), landing);
 }
 
 #[test]
