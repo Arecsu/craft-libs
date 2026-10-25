@@ -226,10 +226,11 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
     }
 
     /// The side split of `proposal`'s frame when halving it leaves no room
-    /// ([`Placement::SplitSized`]): the frame keeps its size, the new frame takes the size the
-    /// moved panels have now (at least its minimum and [`DROP_MARGIN`]), and the frames beyond
-    /// the divider on that side give the room. `None` without such a divider, or when those
-    /// frames cannot give the new frame its minimum.
+    /// ([`Placement::SplitSized`]): the frame keeps its size, and the frames beyond the divider
+    /// on that side give the new frame its minimum (with [`DROP_MARGIN`]). A floating panel
+    /// keeps its size along the split instead, and one in a dock column its column's width or
+    /// its group's height, when that fits. `None` without such a divider, or when those frames
+    /// cannot give the new frame its minimum.
     fn sized_split(&self, panel: &P, proposal: &DropProposal<P>, action: &impl Fn(Target<P>) -> Action<P>) -> Option<Placement<P>> {
         let Placement::Split(zone) = proposal.placement else { return None };
         let axis = if matches!(zone, Zone::Top | Zone::Bottom) { SplitAxis::Vertical } else { SplitAxis::Horizontal };
@@ -277,11 +278,18 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         let room = sizer.travel(far.0, far.1, axis, start).0 - DROP_MARGIN;
         let least = along(super::node_limits(new, self.style, &*self.content).min) + DROP_MARGIN;
         let gap = self.style.gap;
-        let wanted = now.iter().find(|(node, _)| holds(node, panel)).map_or(least, |(_, rect)| along(rect.size()));
-        let size = wanted.max(least).min(along(halved.size()) + room - frame - gap);
-        if size < least {
+        // A split frame's width is its share of the room, not one of its own.
+        let saved = match self.place(panel) {
+            Some(Place::Floating { .. }) => now.iter().find(|(node, _)| holds(node, panel)).map(|(_, rect)| along(rect.size())),
+            Some(place @ Place::Dock { .. }) if axis == SplitAxis::Horizontal => self.layout.column(place).map(|column| column.width),
+            Some(place @ Place::Dock { .. }) => self.layout.group(place).and_then(|group| group.height),
+            _ => None,
+        };
+        let most = along(halved.size()) + room - frame - gap;
+        if least > most {
             return None;
         }
+        let size = saved.filter(|width| (least..=most).contains(width)).unwrap_or(least);
         // The anchor's side of the outer split grows by what the halves did not take already.
         let grow = frame + gap + size - along(halved.size());
         let first = along(a.1.size()) + if start { -grow } else { grow };

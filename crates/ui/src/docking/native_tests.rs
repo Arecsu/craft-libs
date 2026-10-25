@@ -2205,10 +2205,13 @@ fn a_tab_drag_onto_a_native_window_is_no_app_drag() {
 #[test]
 fn a_native_window_fades_only_while_its_drag_can_dock() {
     let drag = |docks| WindowDrag { window: 1, grab: vec2(10.0, 10.0), to: pos2(100.0, 100.0), start: pos2(100.0, 100.0), docks };
-    assert_eq!(drag_opacity(None, true), 1.0);
+    assert_eq!(drag_opacity(None, false, true), 1.0);
     // A bar drag that only moves the window stays opaque.
-    assert_eq!(drag_opacity(Some(&drag(false)), false), 1.0);
-    assert_eq!(drag_opacity(Some(&drag(false)), true), 0.75);
+    assert_eq!(drag_opacity(Some(&drag(false)), false, false), 1.0);
+    assert_eq!(drag_opacity(Some(&drag(false)), false, true), 0.75);
     // A drag by the window's only tab or group docks either way.
-    assert_eq!(drag_opacity(Some(&drag(true)), false), 0.75);
+    assert_eq!(drag_opacity(Some(&drag(true)), false, false), 0.75);
+    // With Cmd/Ctrl held the drag only moves the window.
+    assert_eq!(drag_opacity(Some(&drag(false)), true, true), 1.0);
+    assert_eq!(drag_opacity(Some(&drag(true)), true, false), 1.0);
 }

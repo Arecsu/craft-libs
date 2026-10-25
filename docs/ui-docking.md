@@ -266,9 +266,16 @@ A flyout fits its content the same way, without the title bar.
   edge band is offered only when every frame keeps its minimum.
 - The edge area is the root, or the part between the docks. Without `side_edge_zones` it also
   narrows to the canvas column: where neither side of a side-by-side split is a dock and only
-  one side holds a protected panel, that side. Side panels in split frames then get no band
-  across the whole window, and the drop wraps only the canvas column. A drop on the band
-  anchors on the canvas, so `Placement::Edge` narrows the same way when applied.
+  one side holds a protected panel, that side. The top (bottom) band also narrows a split of
+  rows to its first (last) row when only that row holds the canvas, so a full-width row below
+  the canvas keeps the bottom band. Side panels in split frames then get no band across the
+  whole window, and the drop wraps only the canvas column. A drop on a narrowed band anchors
+  on the canvas, so `Placement::Edge` narrows the same way when applied; on a band that is not
+  narrowed it anchors on a panel that is not protected. The renderer tries the drop with its
+  own permissions and offers the band only when the drop wraps the panels the band shows.
+  `window.panel.dock` to an outer edge picks its anchor the same way, from the permissions
+  `apply` (or `to_actions`) gets and the area's `FloatSpace` (`with_side_edge_zones` before it
+  has drawn).
 - `DockStyle::drop_edges` (a `Sides`, all four by default) lists which sides of a group that
   takes no tabs (a canvas), and of the layout's outer edge, take a drop. A canvas's whole body
   goes to the nearest listed side; with none listed it takes nothing. In the docking profile
@@ -400,7 +407,8 @@ let closed = command.apply(&mut app.workspace, style.right_to_left, &space, |pan
   it floats. `side` is `Start` or `End`: what moves becomes a new last column of that dock, or
   a new dock; when it already is that dock's last column, the command does nothing.
 - `window.panel.dock` with `left`, `right`, `top` or `bottom` and no `anchor` or `side` makes a
-  new frame on that outer edge (`Placement::Edge`). A hidden panel is shown first.
+  new frame on that outer edge (`Placement::Edge`), wrapping what a drag to that edge would
+  (see the edge area above). A hidden panel is shown first.
 - Showing a panel (`activate`, `dock` without a destination, `ui.dock` `open`) restores a hidden
   panel's place; a panel never laid out opens as `Open` without an anchor does.
 - `window.panel.float` without a rect floats what it moves at the size a drag floats it at (see

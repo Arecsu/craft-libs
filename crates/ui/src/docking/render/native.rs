@@ -95,11 +95,12 @@ pub(in crate::docking) const OTHER_CLOSE: CloseLayout =
 const DRAG_OPACITY: f64 = 0.75;
 
 /// Opacity of the window `drag` moves: faded while the drag can dock (its only tab or group, or
-/// a bar with [`crate::docking::DockStyle::title_bar_docks`]), opaque for a plain move.
+/// a bar with [`crate::docking::DockStyle::title_bar_docks`]), opaque for a plain move and while
+/// Ctrl/Cmd keeps the drop floating (`float_only`).
 #[cfg(any(target_os = "macos", test))]
-pub(in crate::docking) fn drag_opacity(drag: Option<&WindowDrag>, title_bar_docks: bool) -> f64 {
+pub(in crate::docking) fn drag_opacity(drag: Option<&WindowDrag>, float_only: bool, title_bar_docks: bool) -> f64 {
     match drag {
-        Some(drag) if drag.docks || title_bar_docks => DRAG_OPACITY,
+        Some(drag) if !float_only && (drag.docks || title_bar_docks) => DRAG_OPACITY,
         _ => 1.0,
     }
 }
@@ -594,7 +595,8 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             let drag = ctx.data(|d| d.get_temp::<WindowDrag>(drag_key));
             let dragged = drag.as_ref().and_then(|drag| self.layout.floating.iter().find(|w| w.id == drag.window));
             let this = dragged.and_then(|w| crate::docking::dock_model::first_active(&w.root)).is_some_and(|p| self.label_of(p) == title);
-            let opacity = if this { drag_opacity(drag.as_ref(), self.style.title_bar_docks) } else { 1.0 };
+            let float_only = drag.is_some_and(|drag| self.cross.pointer.is_some_and(|p| p.window == Some(drag.window) && p.command));
+            let opacity = if this { drag_opacity(drag.as_ref(), float_only, self.style.title_bar_docks) } else { 1.0 };
             set_window_opacity(&title, main.as_deref(), opacity);
         }
         if let Some(placed) = report.placed.filter(|_| !moving) {

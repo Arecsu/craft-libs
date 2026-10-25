@@ -398,6 +398,32 @@ fn a_drop_beside_a_frame_too_narrow_to_halve_takes_room_from_its_neighbour() {
 }
 
 #[test]
+fn a_docked_panel_dropped_beside_a_frame_too_narrow_to_halve_takes_its_minimum_width() {
+    // Info docked below Properties, as wide as it, beside a narrow Tools frame.
+    let root = Node::Split {
+        axis: SplitAxis::Horizontal,
+        size: SplitSize::FixedSecond(60.0),
+        first: Box::new(split(SplitAxis::Vertical, 0.6, tabs(&PROPERTIES), tabs(&[INFO]))),
+        second: Box::new(tabs(&[TOOLS])),
+    };
+    let mut d = driver(Layout { root: Some(root), floating: Vec::new() }, Film::default());
+    d.area = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, SCREEN.y));
+    d.settle();
+    let (tools, properties) = (group(&d, TOOLS), group(&d, PROPERTIES[0]));
+    let out = d.drag(tab(&d, INFO), pos2(tools.left() + 4.0, tools.center().y + 13.0));
+    assert!(
+        matches!(&out.actions[..], [Action::Move { panel: INFO, anchor: TOOLS, placement: Placement::SplitSized { zone: Zone::Left, .. } }]),
+        "{:?}",
+        out.actions
+    );
+    d.settle();
+    let (new_tools, new_info, new_properties) = (group(&d, TOOLS), group(&d, INFO), group(&d, PROPERTIES[0]));
+    assert!((new_tools.width() - tools.width()).abs() < 1.0, "Tools keeps its width: {new_tools:?}");
+    assert!(new_info.width() < 60.0, "Info takes its minimum, not its docked width: {new_info:?}");
+    assert!(new_properties.width() > properties.width() - 60.0, "Properties gives only that: {new_properties:?}");
+}
+
+#[test]
 fn a_drop_beside_a_narrow_frame_joins_it_when_no_neighbour_has_room() {
     let mut d = beside_tools(130.0, 60.0);
     let tools = group(&d, TOOLS);

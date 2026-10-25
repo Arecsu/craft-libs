@@ -543,20 +543,28 @@ impl<P: Clone + Eq + Hash> Layout<P> {
         None
     }
 
-    /// The node an edge split wraps: the root, or the part between the docks. Where neither side
-    /// of a side-by-side split is a dock and only one holds a `canvas` panel, that side: the
-    /// canvas column, without the side frames.
-    pub(in crate::docking) fn edge_path(&self, canvas: &dyn Fn(&P) -> bool) -> Vec<bool> {
+    /// The node an edge split at `zone` wraps: the root, or the part between the docks. Where
+    /// neither side of a side-by-side split is a dock and only one holds a `canvas` panel,
+    /// that side: the canvas column, without the side frames. A top (bottom) edge also
+    /// descends a split of rows into its first (last) row when only that row holds a `canvas`
+    /// panel, so a full-width row below (above) the canvas keeps its edge.
+    pub(in crate::docking) fn edge_path(&self, zone: Zone, canvas: &dyn Fn(&P) -> bool) -> Vec<bool> {
+        let holds = |node: &Node<P>| tree_panels(node).into_iter().any(canvas);
         let mut path = Vec::new();
         let mut node = self.root.as_ref();
-        while let Some(Node::Split { axis: SplitAxis::Horizontal, first, second, .. }) = node {
+        while let Some(Node::Split { axis, first, second, .. }) = node {
             if path.len() > MAX_DEPTH {
                 break;
             }
-            let second_side = match (&**first, &**second) {
-                (Node::Dock { .. }, _) => true,
-                (_, Node::Dock { .. }) => false,
-                _ => match (tree_panels(first).into_iter().any(canvas), tree_panels(second).into_iter().any(canvas)) {
+            let second_side = match (axis, &**first, &**second) {
+                (SplitAxis::Horizontal, Node::Dock { .. }, _) => true,
+                (SplitAxis::Horizontal, _, Node::Dock { .. }) => false,
+                (SplitAxis::Vertical, ..) => match (zone, holds(first), holds(second)) {
+                    (Zone::Top, true, false) => false,
+                    (Zone::Bottom, false, true) => true,
+                    _ => break,
+                },
+                _ => match (holds(first), holds(second)) {
                     (true, false) => false,
                     (false, true) => true,
                     _ => break,
@@ -566,6 +574,22 @@ impl<P: Clone + Eq + Hash> Layout<P> {
             node = Some(if second_side { second } else { first });
         }
         path
+    }
+
+    /// Whether an edge drop at `zone` that narrows by `canvas` wraps less than one that does
+    /// not: the edge area is narrower than the part between the docks.
+    pub(in crate::docking) fn edge_narrows(&self, zone: Zone, canvas: &dyn Fn(&P) -> bool) -> bool {
+        self.edge_path(zone, canvas) != self.edge_path(zone, &|_| false)
+    }
+
+    /// The docked panel, other than `skip`, that a [`Placement::Edge`] anchors on so the drop
+    /// wraps the edge area it shows: a `protected` one where that area is narrowed to the
+    /// canvas column (`narrowed`), else one that is not protected, since a protected anchor
+    /// narrows the model's edge. Any docked panel when every one is protected.
+    pub(in crate::docking) fn edge_anchor(&self, narrowed: bool, protected: &dyn Fn(&P) -> bool, skip: &dyn Fn(&P) -> bool) -> Option<P> {
+        let docked: Vec<&P> =
+            self.panels().into_iter().filter(|p| !skip(p) && matches!(self.place(p), Some(Place::Dock { .. } | Place::Node(_)))).collect();
+        docked.iter().find(|p| protected(p) == narrowed).or(docked.first()).map(|p| (*p).clone())
     }
 
     pub(super) fn columns_mut(&mut self, path: &[bool]) -> Option<&mut Vec<Column<P>>> {
@@ -866,7 +890,7 @@ impl<P: Clone + Eq + Hash> Layout<P> {
                             return Err(DockError::InvalidPlacement);
                         }
                         // A protected anchor narrows the edge to the canvas column.
-                        let path = if canvas(&anchor) { self.edge_path(canvas) } else { self.edge_path(&|_| false) };
+                        let path = if canvas(&anchor) { self.edge_path(zone, canvas) } else { self.edge_path(zone, &|_| false) };
                         let node = self.root.as_mut().and_then(|root| node_at_mut(root, &path)).ok_or(DockError::MissingTarget)?;
                         if matches!(node, Node::Dock { .. }) {
                             return Err(DockError::InvalidPlacement);
