@@ -64,11 +64,11 @@ pub struct DockStyle {
     /// bottom edges add a full-width row, a group's zones are [`Self::side_zone_fraction`] of its
     /// body, and every preview is a line or a tab outline.
     pub side_edge_zones: bool,
-    /// The layout's outer edges that take a drop, a new frame along that edge, and the sides of
-    /// a group that takes no tabs (a canvas) that take a split (top and bottom; the left and
-    /// right window edges are new docks). With [`crate::docking::Sides::NONE`], palettes dock
-    /// only through the dock bands. Not used with [`Self::side_edge_zones`], which takes all
-    /// four. Groups that take tabs keep all four sides.
+    /// Which sides of a group that takes no tabs (a canvas), and of the layout's outer edge, take
+    /// a drop (all four). Without [`Self::side_edge_zones`] the outer left and right edges are
+    /// new docks, so only top and bottom apply there. A dock-column app whose palettes dock only
+    /// at the left and right sets [`crate::docking::Sides::NONE`] with [`Self::new_dock_zones`]
+    /// on. Not used with [`Self::side_edge_zones`]. Groups that take tabs keep all four sides.
     pub drop_edges: super::Sides,
     /// The share of a group's body, below the tab strip, that means "beside" on each side: of
     /// its width from the left and right edges, of its height from the top and bottom edges
@@ -196,7 +196,7 @@ impl DockStyle {
             title_height: super::chrome::TITLE_HEIGHT,
             edge_band: 28.0,
             side_edge_zones: false,
-            drop_edges: super::Sides::TOP_BOTTOM,
+            drop_edges: super::Sides::ALL,
             side_zone_fraction: 1.0 / 3.0,
             drop_line_width: 4.0,
             new_dock_zones: true,
@@ -234,10 +234,17 @@ impl DockStyle {
         }
     }
 
-    /// The sides [`Self::drop_edges`] gives in this profile: all four with
+    /// The canvas sides [`Self::drop_edges`] gives in this profile: all four with
     /// [`Self::side_edge_zones`].
     pub(super) fn drop_sides(&self) -> super::Sides {
         if self.side_edge_zones { super::Sides::ALL } else { self.drop_edges }
+    }
+
+    /// The outer edges that take a drop: all four with [`Self::side_edge_zones`], else the top
+    /// and bottom of [`Self::drop_edges`].
+    pub(super) fn outer_edges(&self) -> super::Sides {
+        let sides = self.drop_sides();
+        if self.side_edge_zones { sides } else { super::Sides { left: false, right: false, ..sides } }
     }
 
     /// How a group's body divides into drop zones: [`crate::docking::SIDE_EDGE_ZONE_DEPTH`] deep

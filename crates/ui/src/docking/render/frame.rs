@@ -170,7 +170,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         paths.and_then(|paths| paths.get(path).cloned()).unwrap_or_else(|| path.to_vec())
     }
 
-    /// The outer edge band under the pointer (P8): the sides of
+    /// The outer edge band under the pointer (P8): the top and bottom of
     /// [`crate::docking::DockStyle::drop_edges`], all four with
     /// [`crate::docking::DockStyle::side_edge_zones`]. Returns a docked anchor that is not
     /// moving, the zone and the preview: a line along the edge area's whole edge, or with side
@@ -181,7 +181,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         let band = if self.style.side_edge_zones { crate::docking::targets::SIDE_EDGE_BAND } else { self.style.edge_band };
         let band = band.min(area.width() / 4.0).min(area.height() / 4.0);
         let line = |zone| crate::docking::targets::edge_line(area, zone, self.style.drop_line_width);
-        let sides = self.style.drop_sides();
+        let sides = self.style.outer_edges();
         let edges = [
             (pointer.y - area.top(), Zone::Top),
             (area.bottom() - pointer.y, Zone::Bottom),

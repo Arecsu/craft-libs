@@ -250,7 +250,7 @@ A flyout fits its content the same way, without the title bar.
   | The seam between two stacked groups of a dock column | A new group between them | `seam_band` (28 pt) |
   | Each edge of a dock column | A new column on that side | `column_edge_band` (28 pt) |
   | The docked area's left or right edge without a dock, and an empty dock | A new dock | `new_dock_band` (28 pt) |
-  | The edge area's sides in `drop_edges` (top and bottom; all four with `side_edge_zones`) | A new frame along that whole side, a quarter of the edge area | `edge_band` (28 pt, 8 pt with `side_edge_zones`; at most a quarter of the edge area) |
+  | The edge area's top and bottom in `drop_edges` (all four sides with `side_edge_zones`) | A new frame along that whole side, a quarter of the edge area | `edge_band` (28 pt, 8 pt with `side_edge_zones`; at most a quarter of the edge area) |
 
   Where a band overlaps a group's outer third, both mean the same side. Without
   `side_edge_zones`, a band reaches only 4 pt past its line into a tab strip that takes tabs;
@@ -261,12 +261,13 @@ A flyout fits its content the same way, without the title bar.
   one side holds a protected panel, that side. Side panels in split frames then get no band
   across the whole window, and the drop wraps only the canvas column. A drop on the band
   anchors on the canvas, so `Placement::Edge` narrows the same way when applied.
-- `DockStyle::drop_edges` (a `Sides`) lists the edge area's sides that take a drop, and the
-  sides of a group that takes no tabs (a canvas) that take a split; there, the whole body goes
-  to the nearest listed side, and with none listed the canvas takes nothing. Groups that take
-  tabs keep all four sides. The default is top and bottom. An app whose palettes dock only
-  through the dock bands sets `Sides::NONE`; one whose palettes sit left and right of the
-  canvas sets `Sides::LEFT_RIGHT`. `side_edge_zones` uses all four and ignores it.
+- `DockStyle::drop_edges` (a `Sides`, all four by default) lists which sides of a group that
+  takes no tabs (a canvas), and of the layout's outer edge, take a drop. A canvas's whole body
+  goes to the nearest listed side; with none listed it takes nothing. In the docking profile
+  the outer left and right edges are new docks, so only top and bottom apply there. Groups
+  that take tabs keep all four sides. A dock-column app whose palettes dock only at the left
+  and right, as in AutoCAD, sets `Sides::NONE` with `new_dock_zones` on. Not used with
+  `side_edge_zones`.
 - With `side_edge_zones` (the split-tree arrangement), a frame's zones are a picture frame
   instead: trapezoids along the four edges of the body below the tab strip, all four the same
   depth, `docking::SIDE_EDGE_ZONE_DEPTH` (40 pt), or a quarter of the body's smaller side when
