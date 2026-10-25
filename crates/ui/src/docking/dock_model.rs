@@ -335,6 +335,66 @@ fn splice<P>(panels: &mut Vec<P>, active: &mut usize, index: usize, new: Vec<P>,
 }
 
 impl<P: Clone + Eq + Hash> Layout<P> {
+    /// The layout without its sizes and rectangles: which panels are where, and their state.
+    /// A run of splits along one axis nests one way (`a | (b | c)`), since nesting it the
+    /// other way only moves sizes between its members.
+    pub(super) fn shape(&self) -> Layout<P> {
+        fn run<'a, P>(node: &'a Node<P>, axis: SplitAxis, out: &mut Vec<&'a Node<P>>) {
+            match node {
+                Node::Split { axis: own, first, second, .. } if *own == axis => {
+                    run(first, axis, out);
+                    run(second, axis, out);
+                }
+                node => out.push(node),
+            }
+        }
+        fn node<P: Clone>(n: &Node<P>) -> Node<P> {
+            match n {
+                Node::Split { axis, .. } => {
+                    let mut members = Vec::new();
+                    run(n, *axis, &mut members);
+                    let mut shaped = members.into_iter().rev().map(node);
+                    let last = shaped.next().unwrap_or(Node::Tabs { panels: Vec::new(), active: 0 });
+                    shaped.fold(last, |second, first| Node::Split {
+                        axis: *axis,
+                        size: SplitSize::Ratio(0.5),
+                        first: Box::new(first),
+                        second: Box::new(second),
+                    })
+                }
+                Node::Tabs { panels, active } => Node::Tabs { panels: panels.clone(), active: *active },
+                Node::Stack { entries } => Node::Stack { entries: entries.iter().map(|e| super::StackEntry { height: None, ..e.clone() }).collect() },
+                Node::Dock { side, columns } => Node::Dock {
+                    side: *side,
+                    columns: columns
+                        .iter()
+                        .map(|c| Column {
+                            groups: c.groups.iter().map(|g| Group { height: None, ..g.clone() }).collect(),
+                            width: 0.0,
+                            iconic: c.iconic,
+                            iconic_width: None,
+                        })
+                        .collect(),
+                },
+            }
+        }
+        Layout {
+            root: self.root.as_ref().map(node),
+            floating: self
+                .floating
+                .iter()
+                .map(|w| Floating { root: node(&w.root), rect: [0.0; 4], native: None, monitor: None, monitor_size: None, ..w.clone() })
+                .collect(),
+        }
+    }
+
+    /// Whether `other` arranges the panels as this layout does: equal apart from split sizes,
+    /// column widths, group heights and window rectangles. A drop that leads from one to the
+    /// other changes nothing the user would see as a move.
+    pub(super) fn same_arrangement(&self, other: &Self) -> bool {
+        self.shape() == other.shape()
+    }
+
     pub(super) fn place(&self, panel: &P) -> Option<Place> {
         for (w, window) in self.floating.iter().enumerate() {
             for (leaf, path) in leaves(&window.root) {

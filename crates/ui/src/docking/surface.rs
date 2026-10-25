@@ -496,51 +496,16 @@ fn cancel_drag_if_replaced<P: Clone + Eq + Hash + Debug + Send + Sync + 'static>
     }) else {
         return;
     };
-    let now = shape(layout);
-    if now == shape(&last.layout) {
+    let now = layout.shape();
+    if now == last.layout.shape() {
         return;
     }
     let mut applied = last.layout;
     for action in last.actions {
         let _ = applied.apply(action);
     }
-    if now != shape(&applied) {
+    if now != applied.shape() {
         cancel_drag::<P>(ctx, area);
-    }
-}
-
-/// `layout` without its sizes and rectangles: which panels are where, and their state.
-fn shape<P: Clone>(layout: &Layout<P>) -> Layout<P> {
-    use super::{Column, Floating, Group, Node, StackEntry};
-    use crate::layout::SplitSize;
-    fn node<P: Clone>(n: &Node<P>) -> Node<P> {
-        match n {
-            Node::Split { axis, first, second, .. } => {
-                Node::Split { axis: *axis, size: SplitSize::Ratio(0.5), first: Box::new(node(first)), second: Box::new(node(second)) }
-            }
-            Node::Tabs { panels, active } => Node::Tabs { panels: panels.clone(), active: *active },
-            Node::Stack { entries } => Node::Stack { entries: entries.iter().map(|e| StackEntry { height: None, ..e.clone() }).collect() },
-            Node::Dock { side, columns } => Node::Dock {
-                side: *side,
-                columns: columns
-                    .iter()
-                    .map(|c| Column {
-                        groups: c.groups.iter().map(|g| Group { height: None, ..g.clone() }).collect(),
-                        width: 0.0,
-                        iconic: c.iconic,
-                        iconic_width: None,
-                    })
-                    .collect(),
-            },
-        }
-    }
-    Layout {
-        root: layout.root.as_ref().map(node),
-        floating: layout
-            .floating
-            .iter()
-            .map(|w| Floating { root: node(&w.root), rect: [0.0; 4], native: None, monitor: None, monitor_size: None, ..w.clone() })
-            .collect(),
     }
 }
 

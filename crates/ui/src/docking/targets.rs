@@ -23,7 +23,8 @@ pub struct DropProposal<P> {
     pub placement: Placement<P>,
     pub preview: Rect,
     pub insertion: Option<Rect>,
-    /// The pointer addresses the tab's current insertion slot.
+    /// The pointer addresses the tab's current insertion slot. The renderer also marks a drop
+    /// that would leave every panel where it is, changing only sizes.
     pub noop: bool,
 }
 

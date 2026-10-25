@@ -315,3 +315,120 @@ fn a_canvas_that_takes_splits_takes_them_only_on_its_drop_edges() {
         }
     }
 }
+
+/// Whether the last frame painted a drop preview: an accent line, outline or fill.
+fn previews(d: &Driver) -> bool {
+    let accent = accent();
+    d.shapes().iter().any(|clipped| match &clipped.shape {
+        egui::Shape::Rect(shape) => shape.fill == accent || shape.fill == accent.gamma_multiply(0.08) || shape.stroke.color == accent,
+        egui::Shape::Path(path) => path.fill != Color32::TRANSPARENT && path.fill == accent.gamma_multiply(0.3),
+        _ => false,
+    })
+}
+
+fn ratio_split(axis: SplitAxis, ratio: f32, first: Node<u32>, second: Node<u32>) -> Node<u32> {
+    Node::Split { axis, size: SplitSize::Ratio(ratio), first: Box::new(first), second: Box::new(second) }
+}
+
+#[test]
+fn a_drop_that_changes_only_sizes_shows_nothing_and_does_nothing() {
+    // CADCraft's sidebar: Layers (2) alone above Properties (3) and a third group (4), beside
+    // the canvas (1); and the same with the column as one two-group split.
+    let nested = ratio_split(SplitAxis::Vertical, 0.3, tabs(&[2]), ratio_split(SplitAxis::Vertical, 0.5, tabs(&[3]), tabs(&[4])));
+    let flat = ratio_split(SplitAxis::Vertical, 0.3, tabs(&[2]), tabs(&[3]));
+    for column in [nested, flat] {
+        let layout = Layout { root: Some(ratio_split(SplitAxis::Horizontal, 0.6, tabs(&[1]), column)), floating: Vec::new() };
+        let start = || DockDriver::new(layout.clone(), Bodies::default());
+        let d = start();
+        let (body, rect) = group(&d, 3);
+        let top = pos2(body.center().x, body.top() + body.height() * 0.2);
+        // Properties' bottom third moves Layers, with a line.
+        let mut d = start();
+        d.hold(tab(&d, 2), pos2(body.center().x, body.bottom() - body.height() * 0.2));
+        assert!(previews(&d) && d.filled(line(rect, Zone::Bottom)));
+        // Its top third would put Layers back where it is.
+        let mut d = start();
+        d.hold(tab(&d, 2), top);
+        assert!(!previews(&d), "no line, outline or fill");
+        let out = d.release(top);
+        assert!(out.actions.is_empty(), "{:?}", out.actions);
+        assert_eq!(d.layout, layout);
+    }
+    // A lone frame's tab on the layout edge its frame already holds.
+    let layout = Layout { root: Some(ratio_split(SplitAxis::Vertical, 0.75, tabs(&[1]), tabs(&[4]))), floating: Vec::new() };
+    let mut d = DockDriver::new(layout.clone(), Bodies::default());
+    let at = pos2(400.0, 590.0);
+    d.hold(tab(&d, 4), at);
+    assert!(!previews(&d));
+    let out = d.release(at);
+    assert!(out.actions.is_empty(), "{:?}", out.actions);
+    assert_eq!(d.layout, layout);
+}
+
+#[test]
+fn a_dock_drop_that_changes_only_heights_shows_nothing_and_does_nothing() {
+    // A dock column of a sized lone group (2) above another (3), beside the canvas (1).
+    let column = Column::new(vec![Group { height: Some(150.0), ..Group::new(vec![2], 0) }, Group::new(vec![3], 0)], 240.0);
+    let dock = Node::Dock { side: Side::End, columns: vec![column] };
+    let root = Node::Split { axis: SplitAxis::Horizontal, size: SplitSize::FixedSecond(240.0), first: Box::new(tabs(&[1])), second: Box::new(dock) };
+    let layout = Layout { root: Some(root), floating: Vec::new() };
+    let start = || DockDriver::new(layout.clone(), Bodies::default());
+    let d = start();
+    let (body, rect) = group(&d, 3);
+    let (upper, _) = group(&d, 2);
+    // Below the lower group moves the upper one, with a line.
+    let mut d = start();
+    d.hold(tab(&d, 2), pos2(body.center().x, body.bottom() - body.height() * 0.2));
+    assert!(previews(&d));
+    // The lower group's top third and the seam between them put the group back where it is.
+    for at in [pos2(body.center().x, body.top() + body.height() * 0.2), pos2(body.center().x, (upper.bottom() + rect.top()) * 0.5)] {
+        let mut d = start();
+        d.hold(tab(&d, 2), at);
+        assert!(!previews(&d), "{at:?}: no line");
+        let out = d.release(at);
+        assert!(out.actions.is_empty(), "{at:?}: {:?}", out.actions);
+        assert_eq!(d.layout, layout);
+    }
+}
+
+#[test]
+fn a_header_drag_of_a_windows_only_group_looks_through_its_window() {
+    // Group 4 floats alone over frame 1's left part.
+    let mut layout = frames();
+    layout.floating.push(Floating::single(vec![4], 0, [40.0, 150.0, 300.0, 260.0]));
+    let start = || DockDriver::new(layout.clone(), Bodies::default());
+    let d = start();
+    let (body, rect) = group(&d, 1);
+    let window = Rect::from_min_size(pos2(40.0, 150.0), vec2(300.0, 260.0));
+    let at = pos2(body.left() + body.width() * 0.25, body.center().y);
+    assert!(window.contains(at));
+    let mut d = start();
+    let bar = d.hit(&Hit::DragBar(4)).unwrap().center();
+    d.hold(bar, at);
+    assert!(d.filled(line(rect, Zone::Left)), "frame 1's left third, behind the window");
+    let out = d.release(at);
+    assert_eq!(out.actions, vec![Action::MoveGroup { panel: 4, to: Target::At { anchor: 1, placement: Placement::Split(Zone::Left) } }]);
+}
+
+#[test]
+fn a_header_drag_in_a_window_of_two_groups_still_offers_the_other_group() {
+    let mut layout = frames();
+    let tree = ratio_split(SplitAxis::Vertical, 0.5, tabs(&[4]), tabs(&[5]));
+    layout.floating.push(Floating::new(tree, [40.0, 100.0, 300.0, 400.0]));
+    let start = || DockDriver::new(layout.clone(), Bodies::default());
+    let d = start();
+    let (body, rect) = group(&d, 5);
+    let mut d = start();
+    let bar = d.hit(&Hit::DragBar(4)).unwrap().center();
+    d.hold(bar, body.center());
+    assert!(d.outlined(rect.shrink(1.0)), "group 5 joins");
+    let out = d.release(body.center());
+    assert!(
+        matches!(
+            &out.actions[..],
+            [Action::MoveGroup { panel: 4, to: Target::At { anchor: 5, placement: Placement::Tab { .. } | Placement::Split(Zone::Center) } }]
+        ),
+        "{:?}",
+        out.actions
+    );
+}

@@ -127,24 +127,35 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
     }
 
     /// The valid target under the pointer for a whole group. A target holding the group
-    /// itself is a no-op proposal; a target the model would reject is no target. A window
-    /// moving live looks through itself and does not split frames or, moved by its bar, join
-    /// a body's center.
+    /// itself is a no-op proposal, and so is a drop that would change only sizes; a target
+    /// the model would reject is no target. A drag that takes a whole floating window along
+    /// looks through it ([`Self::looks_through`]). A window moving live does not split frames
+    /// or, moved by its bar, join a body's center.
     pub(super) fn group_proposal(&self, drag: &GroupDrag<P>, pointer: Pos2) -> Option<DropProposal<P>> {
-        let window = drag.gesture == GroupGesture::Window;
-        if let Some(proposal) = self.extra_proposal(&drag.members, pointer, window) {
-            return self.valid_group(drag, proposal);
+        if let Some(proposal) = self.extra_proposal(&drag.members, pointer, self.looks_through(drag)) {
+            return self.valid_group(drag, self.settled(proposal, |to| group_action(drag, to)));
         }
         let target = self.group_target(drag, pointer)?;
         self.group_proposal_at(drag, pointer, target)
     }
 
-    /// The group under the pointer that a group drag addresses. A window moving live looks
-    /// through itself.
+    /// Whether a group drag looks through the floating window it comes from: the window's
+    /// title bar moves it, or the drag holds the window's only group and so takes the window
+    /// along. The window then covers nothing behind it.
+    pub(super) fn looks_through(&self, drag: &GroupDrag<P>) -> bool {
+        match drag.gesture {
+            GroupGesture::Window => true,
+            GroupGesture::Group => self.whole_window(&drag.panel),
+            GroupGesture::Column => false,
+        }
+    }
+
+    /// The group under the pointer that a group drag addresses, past the drag's own groups
+    /// when it looks through its window.
     fn group_target(&self, drag: &GroupDrag<P>, pointer: Pos2) -> Option<&DropTarget<P>> {
-        let window = drag.gesture == GroupGesture::Window;
+        let through = self.looks_through(drag);
         let own = |t: &DropTarget<P>| t.tabs.iter().any(|(p, _)| drag.members.contains(p));
-        self.targets.iter().rev().find(|t| crate::docking::targets::usable(t.rect) && t.rect.contains(pointer) && !(window && own(t)))
+        self.targets.iter().rev().find(|t| crate::docking::targets::usable(t.rect) && t.rect.contains(pointer) && !(through && own(t)))
     }
 
     /// [`Self::group_proposal`] on `target` alone.
@@ -189,23 +200,37 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
     /// [`crate::docking::resolve_drop_by`] with [`crate::docking::DockStyle::zone_rule`] and the
     /// canvas sides of [`crate::docking::DockStyle::drop_edges`], where a split that would leave
     /// a group without room becomes a join of the target group, or no target when the group
-    /// takes no tabs.
+    /// takes no tabs. A drop that would change only sizes is a no-op ([`Self::settled`]).
     fn resolve_roomy(&self, panel: &P, pointer: Pos2, targets: &[DropTarget<P>], action: impl Fn(Target<P>) -> Action<P>) -> Option<DropProposal<P>> {
         let proposal = resolve_drop_on(panel, pointer, targets, self.style.zone_rule(), self.style.drop_sides())?;
         if !matches!(proposal.placement, Placement::Split(zone) if zone != Zone::Center) {
-            return Some(proposal);
+            return Some(self.settled(proposal, action));
         }
         if self.leaves_room(action(Target::At { anchor: proposal.anchor.clone(), placement: proposal.placement.clone() })) {
-            return Some(proposal);
+            return Some(self.settled(proposal, action));
         }
         let target = targets.iter().rev().find(|t| crate::docking::targets::usable(t.rect) && t.rect.contains(pointer))?;
-        resolve_drop_on(
+        let proposal = resolve_drop_on(
             panel,
             pointer,
             std::slice::from_ref(&DropTarget { allow_splits: false, ..target.clone() }),
             self.style.zone_rule(),
             self.style.drop_sides(),
-        )
+        )?;
+        Some(self.settled(proposal, action))
+    }
+
+    /// `proposal`, marked a no-op when `action` at it would leave every panel where it is,
+    /// changing only sizes ([`Layout::same_arrangement`]): a lone group dropped beside the
+    /// group it already borders, or a tab on the edge its frame already holds. Such a drop
+    /// shows no target and changes nothing.
+    fn settled(&self, mut proposal: DropProposal<P>, action: impl Fn(Target<P>) -> Action<P>) -> DropProposal<P> {
+        if !proposal.noop {
+            let mut candidate = self.layout.clone();
+            let to = Target::At { anchor: proposal.anchor.clone(), placement: proposal.placement.clone() };
+            proposal.noop = candidate.apply_with_permissions(action(to), |p| self.permissions(p)).is_ok() && candidate.same_arrangement(self.layout);
+        }
+        proposal
     }
 
     /// Whether `action`, a drop that splits a group or the outer edge, leaves room: every group
@@ -245,8 +270,9 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
     }
 
     /// Release of a group drag: join or split at the target, or float at the ghost with the
-    /// group's size. Over its own docked position nothing changes; a floating group released
-    /// over itself moves there.
+    /// group's size. Over its own docked position, or where the drop would change only sizes,
+    /// nothing changes; a floating group released over itself or a window's title bar moves
+    /// there.
     fn drop_group(&mut self, drag: &GroupDrag<P>, pointer: Pos2, float_only: bool) {
         if pointer.distance(drag.origin) < 2.0 {
             return;
@@ -262,7 +288,8 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             self.output.actions.push(group_action(drag, to));
             return;
         }
-        if proposal.is_some() && !floating {
+        // A no-op anchored on another group would change only sizes.
+        if proposal.is_some_and(|p| !floating || !drag.members.contains(&p.anchor)) {
             return;
         }
         if !float_only && !self.style.float_on_empty_drop {
@@ -416,12 +443,14 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
 
     /// The group target a single tab drag would take at `pointer`.
     pub(super) fn tab_proposal(&self, panel: &P, pointer: Pos2) -> Option<DropProposal<P>> {
-        self.extra_proposal(std::slice::from_ref(panel), pointer, false).or_else(|| {
-            self.resolve_roomy(panel, pointer, &self.targets, |to| match to {
-                Target::At { anchor, placement } => Action::Move { panel: panel.clone(), anchor, placement },
-                to => Action::MovePanel { panel: panel.clone(), to },
-            })
-        })
+        let action = |to| match to {
+            Target::At { anchor, placement } => Action::Move { panel: panel.clone(), anchor, placement },
+            to => Action::MovePanel { panel: panel.clone(), to },
+        };
+        match self.extra_proposal(std::slice::from_ref(panel), pointer, false) {
+            Some(proposal) => Some(self.settled(proposal, action)),
+            None => self.resolve_roomy(panel, pointer, &self.targets, action),
+        }
     }
 
     /// The preview of a tab drag's group target (with
@@ -500,8 +529,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
 
     /// [`Self::paint_zones`] for a group drag.
     pub(super) fn paint_group_zones(&self, painter: &egui::Painter, drag: &GroupDrag<P>, pointer: Pos2, proposal: Option<&DropProposal<P>>) -> bool {
-        let window = drag.gesture == GroupGesture::Window;
-        if !self.style.side_edge_zones || self.extra_proposal(&drag.members, pointer, window).is_some() {
+        if !self.style.side_edge_zones || self.extra_proposal(&drag.members, pointer, self.looks_through(drag)).is_some() {
             return false;
         }
         let Some(target) = self.group_target(drag, pointer) else { return false };

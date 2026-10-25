@@ -215,7 +215,10 @@ A flyout fits its content the same way, without the title bar.
   with `title_bar_docks` a release over a target docks the whole window there, else it only
   moves.
 - Inside a floating window, tabs and drag bars drag and dock as they do in the docked layout,
-  into any window. Its groups split, join and resize like frames, with dividers and four-way
+  into any window. A drag bar or border of a window's only group takes the whole window along,
+  so, like the title bar, it looks through the window: the groups, docks and windows behind it
+  take the drop while the pointer is still inside it. In a window of several groups, the other
+  groups stay targets. Its groups split, join and resize like frames, with dividers and four-way
   handles (`Divider::WindowSplit` and `Divider::WindowIntersection`, named by the window's first
   panel). Double-clicking the title bar minimizes the window to its title bar, or to the tab strip
   of its only group; so does double-clicking that group's strip. The group menu's float item
@@ -307,6 +310,12 @@ A flyout fits its content the same way, without the title bar.
     whole edge for the outer edge band. The line's length shows what the drop docks beside.
   - A drop that joins a group shows a 2 pt accent outline of the whole group, with a light fill,
     and on its strip the 2 pt insertion marker.
+
+  A drop that would leave every panel where it is, changing only sizes, shows nothing and
+  changes nothing: a lone group dropped beside the group it already borders, or a frame's tab
+  on the layout edge the frame already holds. Split sizes, column widths, group heights and
+  window rectangles are not compared, and a run of splits along one axis is the same however
+  it nests.
 
   A group drag also shows its ghost at the pointer. With `side_edge_zones`, a drag over a group
   instead outlines each of its zones that a drop would change something in (the side
