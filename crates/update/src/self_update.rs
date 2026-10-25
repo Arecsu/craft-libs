@@ -596,7 +596,7 @@ const PORTABLE_STAGING: &str = "launcher-update";
 /// `pid` to exit, does `finish` and starts `exe`. Run from the cache, the helper doesn't hold the
 /// installed exe that the step replaces.
 #[cfg(windows)]
-fn windows_helper(app: &App, paths: &Paths, pid: u32, exe: &Path, finish: &Finish) -> Result<(), String> {
+fn windows_helper(_app: &App, paths: &Paths, pid: u32, exe: &Path, finish: &Finish) -> Result<(), String> {
     let program = std::env::current_exe().map_err(|e| format!("couldn't find this program ({e})"))?;
     let dir = paths.cache.join(HELPER_DIR);
     // The previous update's copy, when it's still there.
