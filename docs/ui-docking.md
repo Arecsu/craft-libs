@@ -452,10 +452,11 @@ the main window has never reported its `outer_rect`; an app that forces X11 in c
 windows from the first frame. `DockArea::native_windows(bool)` overrides the choice either way.
 
 - **Identity.** `Floating::id` names the OS window, so a window keeps it when its panels change,
-  including when its first panel moves out. `Floating::new` and loading draw fresh ids, and
-  `Floating::with_id` sets one; a layout
-  loads with unique ids; a window that merges into another takes the receiver's id, and a whole
-  window that moves (floated again, or its only group dragged) keeps its own.
+  including when its first panel moves out. `Floating::new` draws a fresh id and
+  `Floating::with_id` sets one. A saved layout stores every window's id and loads with unique
+  ids: a window saved without an id, or with one an earlier window took, gets a fresh one. A
+  window that merges into another takes the receiver's id, and a whole window that moves
+  (floated again, or its only group dragged) keeps its own.
 - **Kind and level.** `DockContent::window_kind` sorts panels into palettes
   (`WindowKind::Palette`, the default) and viewers (`WindowKind::Normal`), such as a video
   monitor on a second display. A window holding any `Normal` panel is a normal window, whichever

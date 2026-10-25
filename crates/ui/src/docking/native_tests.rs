@@ -583,8 +583,9 @@ fn a_native_window_saves_its_id_place_and_monitor() {
     let copies: Layout<u32> = serde_json::from_str(&serde_json::to_string(&copies).unwrap()).unwrap();
     assert_eq!(copies.floating[0].id, layout.floating[0].id);
     assert_ne!(copies.floating[1].id, copies.floating[0].id);
-    // An in-window window writes no id, as older builds did.
-    assert!(!serde_json::to_string(&Floating::single(vec![1u32], 0, [0.0, 0.0, 9.0, 9.0])).unwrap().contains("id"));
+    // An in-window window writes its id too.
+    let in_window = Floating::single(vec![1u32], 0, [0.0, 0.0, 9.0, 9.0]).with_id(3);
+    assert!(serde_json::to_string(&in_window).unwrap().contains(r#""id":3"#));
 }
 
 /// Height of the bar at the top of a native window.
