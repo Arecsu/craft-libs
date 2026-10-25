@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use egui::{Event, Id, Key, Modifiers, PointerButton, Pos2, Rect, Ui, pos2, vec2};
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::{Harness, kittest::NodeT, kittest::Queryable};
 
 use super::*;
 
@@ -41,6 +41,30 @@ impl PaneContent<Pane> for Content {
     }
 }
 
+/// [`Content`] with the title bar on or off.
+struct Titled(bool);
+
+impl PaneContent<Pane> for Titled {
+    fn title(&self, pane: &Pane) -> String {
+        Content.title(pane)
+    }
+    fn body(&mut self, ui: &mut Ui, pane: &Pane) {
+        Content.body(ui, pane);
+    }
+    fn default_state(&self, pane: &Pane) -> PaneState {
+        Content.default_state(pane)
+    }
+    fn movable(&self, pane: &Pane) -> bool {
+        Content.movable(pane)
+    }
+    fn closable(&self, pane: &Pane) -> bool {
+        Content.closable(pane)
+    }
+    fn title_bar(&self, _: &Pane) -> bool {
+        self.0
+    }
+}
+
 /// The app side: open list, persisted states and every request it received.
 struct App {
     open: Vec<Pane>,
@@ -50,17 +74,45 @@ struct App {
     to_document: usize,
     rtl: bool,
     policy: SidePolicy,
+    title_bar: bool,
+    /// The document is one drag-sensing widget, like a canvas.
+    drag_document: bool,
+    document_drags: usize,
 }
 
 impl App {
     fn new(open: &[Pane]) -> Self {
-        Self { open: open.to_vec(), states: HashMap::new(), log: Vec::new(), focused: None, to_document: 0, rtl: false, policy: SidePolicy::Columns }
+        Self {
+            open: open.to_vec(),
+            states: HashMap::new(),
+            log: Vec::new(),
+            focused: None,
+            to_document: 0,
+            rtl: false,
+            policy: SidePolicy::Columns,
+            title_bar: true,
+            drag_document: false,
+            document_drags: 0,
+        }
     }
 
     fn frame(&mut self, ui: &mut Ui) {
         let states = self.states.clone();
-        let out = PaneHost::new("panes").rtl(self.rtl).policy(self.policy).show(ui, &self.open, |p| states.get(p).copied(), &mut Content);
-        egui::CentralPanel::default().show(ui, |ui| ui.label("Document"));
+        let out =
+            PaneHost::new("panes").rtl(self.rtl).policy(self.policy).show(ui, &self.open, |p| states.get(p).copied(), &mut Titled(self.title_bar));
+        let drag_document = self.drag_document;
+        // A canvas fills the panel, without the default frame's margin.
+        let panel = if drag_document { egui::CentralPanel::default().frame(Frame::NONE) } else { egui::CentralPanel::default() };
+        let dragged = panel
+            .show(ui, |ui| {
+                if drag_document {
+                    ui.interact(ui.max_rect(), Id::new("document-drag"), Sense::click_and_drag()).dragged()
+                } else {
+                    ui.label("Document").dragged()
+                }
+            })
+            .inner;
+        self.document_drags += usize::from(dragged);
         for request in &out.requests {
             match request {
                 PaneRequest::Close(p) => self.open.retain(|o| o != p),
@@ -148,6 +200,79 @@ fn last_resize(app: &App, pane: Pane) -> Option<f32> {
         PaneRequest::Resize(p, size) if *p == pane => Some(*size),
         _ => None,
     })
+}
+
+#[test]
+fn a_docked_pane_without_a_title_bar_fills_the_pane_and_still_resizes() {
+    for title_bar in [true, false] {
+        let mut app = App::new(&[Pane::Nav]);
+        app.title_bar = title_bar;
+        let mut h = harness(app);
+        let chrome = [
+            rect(&h, pane_id(Pane::Nav).with("title")).is_some(),
+            h.query_by_label("Move Nav pane").is_some(),
+            h.query_by_label("Pane options").is_some(),
+            h.query_by_label("Close").is_some(),
+        ];
+        assert_eq!(chrome, [title_bar; 4], "title bar {title_bar}: title, its node, ▾ and ×");
+        // The body's first line sits under the body margin, below the title bar when there is one.
+        let body = h.get_by_label("Nav body").rect();
+        let top = if title_bar { L + TITLE_BAR_HEIGHT + 8.0 } else { L + 8.0 };
+        assert!((body.top() - top).abs() < 2.0, "title bar {title_bar}: body {body:?}");
+
+        // Without the bar, the body is the pane's accessible region, named by its title.
+        let regions = h.query_all_by_label("Nav").filter(|n| n.accesskit_node().role() == egui::accesskit::Role::Pane).count();
+        assert_eq!(regions, usize::from(!title_bar), "title bar {title_bar}");
+        assert_eq!(h.get_by_label("Resize pane").accesskit_node().role(), egui::accesskit::Role::Splitter);
+
+        drag(&mut h, pos2(L + 250.0, 300.0), pos2(L + 300.0, 300.0));
+        assert_eq!(last_resize(h.state(), Pane::Nav), Some(300.0), "title bar {title_bar}");
+        assert_eq!(edge(&h, Pane::Nav), L + 300.0);
+    }
+}
+
+#[test]
+fn f6_reaches_a_pane_without_a_title_bar() {
+    let mut app = App::new(&[Pane::Nav, Pane::Comments]);
+    app.title_bar = false;
+    let mut h = harness(app);
+    key(&mut h, Key::F6, Modifiers::NONE);
+    assert_eq!(h.state().focused, Some(Pane::Nav));
+    assert_eq!(h.ctx.memory(|m| m.focused()), Some(pane_id(Pane::Nav).with("body")), "F6 focuses the body");
+    key(&mut h, Key::F6, Modifiers::NONE);
+    assert_eq!(h.state().focused, Some(Pane::Comments));
+    key(&mut h, Key::F6, Modifiers::NONE);
+    assert_eq!((h.state().focused, h.state().to_document), (None, 1));
+}
+
+#[test]
+fn the_resize_edge_works_on_both_sides_of_the_line_over_a_dragging_document() {
+    for offset in [-3.5, 3.5] {
+        let mut app = App::new(&[Pane::Nav]);
+        app.drag_document = true;
+        let mut h = harness(app);
+        // The line is at L + 250; positive offsets lie over the document.
+        drag(&mut h, pos2(L + 250.0 + offset, 300.0), pos2(L + 300.0 + offset, 300.0));
+        // The edge follows the pointer.
+        let size = last_resize(h.state(), Pane::Nav);
+        assert!(size.is_some_and(|size| (size - (300.0 + offset)).abs() <= 1.0), "offset {offset}: {size:?}");
+        assert_eq!(h.state().document_drags, 0, "offset {offset}: the document took the drag");
+    }
+    // A floating pane over the edge keeps its presses: the edge stays under floating windows.
+    let mut app = App::new(&[Pane::Nav, Pane::Styles]);
+    app.states.insert(Pane::Styles, PaneState { place: Place::Floating, size: None, float_rect: Some([L + 150.0, 100.0, 220.0, 300.0]) });
+    let mut h = harness(app);
+    h.run_steps(2);
+    drag(&mut h, pos2(L + 250.0, 300.0), pos2(L + 300.0, 300.0));
+    assert_eq!(last_resize(h.state(), Pane::Nav), None, "the edge under a floating pane took the drag");
+
+    // Away from the edge, the document still drags.
+    let mut app = App::new(&[Pane::Nav]);
+    app.drag_document = true;
+    let mut h = harness(app);
+    drag(&mut h, pos2(L + 400.0, 300.0), pos2(L + 450.0, 300.0));
+    assert!(h.state().document_drags > 0);
+    assert_eq!(last_resize(h.state(), Pane::Nav), None);
 }
 
 #[test]
