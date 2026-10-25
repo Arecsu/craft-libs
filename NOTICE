@@ -29,9 +29,11 @@ Hyphenation patterns for other languages, embedded through the hypher crate only
   Unlicense, a notice permitting any use, or a choice of licenses that includes one of these. An
   application that enables a language ships that file's copyright and license notice. The
   exception is Slovak (hyph-sk.tex, Copyright (C) 1992 Jana Chlebíková), under the GNU General
-  Public License, version 2 or later (SPDX: GPL-2.0-or-later). It is compiled in only with the
+  Public License, version 2 or later (SPDX: GPL-2.0-or-later). craft-text asks for it through the
   feature "slovak-gpl", which "all-languages" does not include; an application that enables it
-  ships GPL-licensed data. The Spanish patterns (feature "spanish") are hyph-es.tex 5.0.
+  ships GPL-licensed data. Cargo unifies features, so another dependency that enables hypher's
+  "slovak" feature (hypher's default features do) embeds the same data; a build that must exclude
+  it checks its dependency graph. The Spanish patterns (feature "spanish") are hyph-es.tex 5.0.
   Copyright (C) 1993, 1997 Javier Bezos, 2001-2019 Javier Bezos, CervanTeX. MIT License:
   Permission is hereby granted, free of charge, to any person obtaining a copy of this software
   and associated documentation files (the "Software"), to deal in the Software without
