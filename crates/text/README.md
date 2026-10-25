@@ -42,8 +42,11 @@ Each has a cargo feature named as in hypher (`spanish`, `german`, `norwegian`, â
 enables 46 of them. Patterns for languages whose feature is off are not compiled in.
 
 Slovak's patterns are under the GPL, version 2 or later; the patterns of every other language are
-under a permissive license. Their feature is `slovak-gpl`, and `all-languages` leaves it out: a build that
-enables it ships GPL-licensed data.
+under a permissive license. craft-text asks for Slovak through the feature `slovak-gpl`, which
+`all-languages` leaves out; a build that enables it ships GPL-licensed data. Cargo unifies features,
+so another dependency that enables hypher's `slovak` feature (hypher's default features do) embeds
+the same data. A build that must exclude it checks its dependency graph
+(`cargo tree -e features -i hypher`).
 
 ```rust
 use craft_text::hyphen::{Lang, Limits, hyphen_points_in};
