@@ -53,6 +53,8 @@ pub struct Updater {
     install: Option<(Receiver<Result<(), String>>, Release)>,
     prompt: Option<StartupPrompt>,
     restart: bool,
+    /// An update is installed and waits for the app to exit; nothing starts a second one.
+    installed: bool,
 }
 
 impl Updater {
@@ -68,6 +70,7 @@ impl Updater {
             install: None,
             prompt: None,
             restart: false,
+            installed: false,
         }
     }
 
@@ -93,7 +96,7 @@ impl Updater {
 
     /// Opens the startup prompt for a release the app found itself.
     pub fn offer(&mut self, release: Release) {
-        if self.install.is_none() {
+        if self.install.is_none() && !self.installed {
             self.prompt = Some(StartupPrompt::new(self.app, release, self.version.clone()));
         }
     }
@@ -115,7 +118,7 @@ impl Updater {
     }
 
     fn begin(&mut self, ctx: &egui::Context, requested: bool) {
-        if self.install.is_some() {
+        if self.install.is_some() || self.installed {
             return;
         }
         if requested {
@@ -148,7 +151,7 @@ impl Updater {
         match answer {
             Ok(Some(release)) => {
                 self.status = Status::Idle;
-                if self.prompt.is_none() && self.install.is_none() {
+                if self.prompt.is_none() && self.install.is_none() && !self.installed {
                     self.prompt = Some(StartupPrompt::new(self.app, release, self.version.clone()));
                 }
             }
@@ -188,7 +191,10 @@ impl Updater {
             if let Some(outcome) = outcome {
                 let release = self.install.take().map(|(_, release)| release);
                 match outcome {
-                    Ok(()) => self.restart = true,
+                    Ok(()) => {
+                        self.installed = true;
+                        self.restart = true;
+                    }
                     Err(e) => {
                         log::warn!("{} self-update failed: {e}", self.app.name);
                         // The prompt may have been dismissed meanwhile: bring it back with the reason.
@@ -238,6 +244,10 @@ impl Updater {
 
     fn start_install(&mut self, ctx: &egui::Context) {
         let Some(prompt) = &mut self.prompt else { return };
+        if self.installed {
+            prompt.status_message = Some(format!("The update is installed. Close {} to finish; it restarts by itself.", self.app.name));
+            return;
+        }
         let Some(installed) = self_update::current(self.app) else {
             prompt.status_message = Some("Cannot auto-update this installation type. Please download manually.".into());
             prompt.is_installing = false;
@@ -394,6 +404,22 @@ mod tests {
         drop(tx);
         u.tick(&ctx);
         assert!(u.prompt.as_ref().is_some_and(|p| p.status_message.is_some()));
+    }
+
+    #[test]
+    fn nothing_starts_once_an_update_is_installed() {
+        let ctx = egui::Context::default();
+        let mut u = updater(Ok(Some(newer())));
+        let (tx, rx) = channel();
+        u.install = Some((rx, newer()));
+        assert!(tx.send(Ok(())).is_ok());
+        u.tick(&ctx);
+        assert_eq!(u.show(&ctx), Action::Close);
+        u.prompt = None;
+        u.check_now(&ctx);
+        assert!(u.check.is_none(), "no check after an install");
+        u.offer(newer());
+        assert!(!u.prompt_open(), "no second offer after an install");
     }
 
     #[test]

@@ -12,10 +12,27 @@ fn absolute_env(name: &str) -> Option<PathBuf> {
     std::env::var_os(name).map(PathBuf::from).filter(|p| p.is_absolute())
 }
 
+/// The known folder Local AppData, which follows a redirected profile (the environment variable
+/// is only the fallback).
+#[cfg(windows)]
+fn local_app_data() -> Option<PathBuf> {
+    use winsafe::{SHGetKnownFolderPath, co};
+    SHGetKnownFolderPath(&co::KNOWNFOLDERID::LocalAppData, co::KF::DEFAULT, None)
+        .ok()
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| absolute_env("LOCALAPPDATA"))
+}
+
+#[cfg(not(windows))]
+fn local_app_data() -> Option<PathBuf> {
+    absolute_env("LOCALAPPDATA")
+}
+
 /// Where per-user data lives on this machine.
 pub fn data_local_dir() -> Option<PathBuf> {
     if cfg!(target_os = "windows") {
-        absolute_env("LOCALAPPDATA")
+        local_app_data()
     } else if cfg!(target_os = "macos") {
         home_dir().map(|h| h.join("Library").join("Application Support"))
     } else {
@@ -26,7 +43,7 @@ pub fn data_local_dir() -> Option<PathBuf> {
 /// Where per-user caches live on this machine.
 pub fn cache_dir() -> Option<PathBuf> {
     if cfg!(target_os = "windows") {
-        absolute_env("LOCALAPPDATA")
+        local_app_data()
     } else if cfg!(target_os = "macos") {
         home_dir().map(|h| h.join("Library").join("Caches"))
     } else {

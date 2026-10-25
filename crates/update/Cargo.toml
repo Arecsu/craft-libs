@@ -41,5 +41,5 @@ plist = "1"
 winreg = "0.55"
 dunce = "1"
 zip = { version = "9", default-features = false, features = ["deflate"] }
-winsafe = { version = "0.0.29", features = ["kernel", "version"] }
+winsafe = { version = "0.0.29", features = ["advapi", "kernel", "shell", "version"] }
 verifysign = "1"
