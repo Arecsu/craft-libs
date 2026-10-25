@@ -584,6 +584,9 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             let body = Rect::from_min_max(pos2(full.left(), (full.top() + BAR_HEIGHT).min(full.bottom())), full.max);
             self.cross.pointed = None;
             self.floating_body(ui, window, body, full);
+            if own && !blocked && ui.ctx().text_edit_focused() {
+                ui.ctx().with_plugin(|input: &mut NativeInput| input.typing_next.insert(viewport));
+            }
             self.cross.held |= ui.ctx().dragged_id().is_some_and(|id| self.owned_interactions.contains(&id));
             if debug_close() {
                 debug_outlines(ui, full, &buttons);
@@ -900,6 +903,14 @@ pub(super) struct NativeInput {
     pub held: Held,
     /// The main window's passes so far.
     pub pass: u64,
+    /// The windows that had a focused text field in the last main-window pass, and those
+    /// noted so far in this one.
+    typing: std::collections::HashSet<ViewportId>,
+    typing_next: std::collections::HashSet<ViewportId>,
+    /// The main window's completed passes when `typing` was last taken from `typing_next`.
+    typing_at: u64,
+    /// Key and clipboard events for each window's next input, and the pass they were queued in.
+    keys: std::collections::HashMap<ViewportId, (u64, Vec<Event>)>,
 }
 
 pub(in crate::docking) type InputHook = Box<dyn FnMut(&Context, &mut RawInput) + Send>;
@@ -918,10 +929,31 @@ impl egui::Plugin for NativeInput {
             let pass = self.pass;
             self.queued.retain(|_, (at, _)| *at + 1 >= pass);
             self.held.retain(|_, (at, _)| *at + 1 >= pass);
+            self.keys.retain(|_, (at, _)| *at + 1 >= pass);
+            self.typing = std::mem::take(&mut self.typing_next);
+            self.typing_at = ctx.cumulative_pass_nr_for(ViewportId::ROOT);
+            // eframe has run `App::raw_input_hook`, where an app's native menu reports its key
+            // equivalents (macOS: AppKit's menu takes them before the key window sees them).
+            // While a native window has the keyboard, the main window gets no keys of its own,
+            // so these are the menu's: those a focused text field there acts on are its own.
+            if let Some(window) = typing_window_of(&self.typing, &input.viewports) {
+                let (moved, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut input.events).into_iter().partition(text_key);
+                input.events = kept;
+                if !moved.is_empty() {
+                    let entry = self.keys.entry(window).or_default();
+                    entry.0 = pass;
+                    entry.1.extend(moved);
+                    ctx.request_repaint_of(window);
+                }
+            }
         }
         // Taken before routing, which may queue more for this window's next input. A held
         // release waits for a later main-window pass: a discarded pass reruns within its own.
         let waiting = self.queued.remove(&viewport);
+        let keys = self.keys.remove(&viewport).map(|(_, mut keys)| {
+            text_clipboard_keys(ctx, viewport, &mut keys);
+            keys
+        });
         let held = if self.held.get(&viewport).is_some_and(|(at, _)| *at < self.pass) { self.held.remove(&viewport) } else { None };
         let mut routed = false;
         for route in self.routes.values_mut() {
@@ -929,8 +961,11 @@ impl egui::Plugin for NativeInput {
         }
         // Before the window's own events: they happened earlier, and a held release must not
         // end a press that follows it.
-        let earlier =
-            held.into_iter().flat_map(|(_, events)| events).chain(waiting.into_iter().flat_map(|(_, events)| events.into_iter().map(|(_, e)| e)));
+        let earlier = held
+            .into_iter()
+            .flat_map(|(_, events)| events)
+            .chain(waiting.into_iter().flat_map(|(_, events)| events.into_iter().map(|(_, e)| e)))
+            .chain(keys.into_iter().flatten());
         input.events.splice(0..0, earlier);
         if routed {
             ctx.request_repaint_of(ViewportId::ROOT);
@@ -938,6 +973,74 @@ impl egui::Plugin for NativeInput {
         if let Some(hook) = self.windows.get(&input.viewport_id).and_then(|area| self.hooks.get(area)) {
             (hook.lock())(ctx, input);
         }
+    }
+}
+
+/// The native window in `typing` that has the keyboard, by the main window's `viewports`.
+fn typing_window_of(typing: &std::collections::HashSet<ViewportId>, viewports: &egui::ViewportIdMap<ViewportInfo>) -> Option<ViewportId> {
+    typing.iter().copied().find(|viewport| viewports.get(viewport).and_then(|info| info.focused) == Some(true))
+}
+
+/// Whether a text field acts on `event`: the clipboard events, and the command keys that copy,
+/// paste, select all, undo, redo, move or delete in text. Other command keys are the app's
+/// (save, close, new window, its own shortcuts).
+fn text_key(event: &Event) -> bool {
+    match event {
+        Event::Copy | Event::Cut | Event::Paste(_) => true,
+        Event::Key { key, modifiers: m, .. } if m.command && !m.alt => match key {
+            Key::C | Key::X | Key::V | Key::A | Key::Backspace | Key::Delete => !m.shift,
+            Key::Z | Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown => true,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// A text field copies and pastes on `Copy`, `Cut` and `Paste` events, which egui-winit makes
+/// from the window's own key presses. A command C, X or V press here is a menu's key
+/// equivalent, which a text field ignores: give back C and X as `Copy` and `Cut`, and turn V
+/// into a request for the clipboard text, which arrives in `viewport` as `Paste`.
+fn text_clipboard_keys(ctx: &Context, viewport: ViewportId, events: &mut Vec<Event>) {
+    events.retain_mut(|e| {
+        let Event::Key { key, pressed: true, modifiers: m, .. } = *e else { return true };
+        if !m.command || m.alt || m.shift {
+            return true;
+        }
+        match key {
+            Key::C => *e = Event::Copy,
+            Key::X => *e = Event::Cut,
+            Key::V => {
+                ctx.send_viewport_cmd_to(viewport, ViewportCommand::RequestPaste);
+                return false;
+            }
+            _ => {}
+        }
+        true
+    });
+}
+
+/// See [`crate::docking::typing_window`].
+pub(in crate::docking) fn typing_window(ctx: &Context) -> Option<ViewportId> {
+    // Between frames (in `App::raw_input_hook`) a main-window pass has ended since the swap, and
+    // `typing_next` is the whole of the last pass, which the next swap hands to the routing.
+    let passes = ctx.cumulative_pass_nr_for(ViewportId::ROOT);
+    let typing =
+        ctx.with_plugin(|input: &mut NativeInput| if passes > input.typing_at { input.typing_next.clone() } else { input.typing.clone() })?;
+    ctx.input_for(ViewportId::ROOT, |i| typing_window_of(&typing, &i.raw.viewports))
+}
+
+/// See [`crate::docking::send_keys`].
+pub(in crate::docking) fn send_keys(ctx: &Context, viewport: ViewportId, events: Vec<Event>) {
+    if events.is_empty() {
+        return;
+    }
+    let queued = ctx.with_plugin(|input: &mut NativeInput| {
+        let entry = input.keys.entry(viewport).or_default();
+        entry.0 = input.pass;
+        entry.1.extend(events);
+    });
+    if queued.is_some() {
+        ctx.request_repaint_of(viewport);
     }
 }
 

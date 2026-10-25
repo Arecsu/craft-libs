@@ -791,6 +791,41 @@ pub fn route_app_drag(ctx: &Context, area_id: Id) {
     let _ = (ctx, area_id);
 }
 
+/// The native window that has the keyboard and a focused text field in its last pass (feature
+/// `native-windows`; elsewhere `None`). Not a window drawn under [`DockArea::input_blocked`].
+///
+/// On macOS the menu bar takes key equivalents such as ⌘C and ⌘V before the key window sees
+/// them, and an app's menu glue reports them in the main window's input. While this is `Some`,
+/// the dock area moves the keys a text field acts on (⌘C, ⌘X, ⌘V, ⌘A, ⌘Z and ⇧⌘Z, ⌘ with the
+/// arrows, ⌘Backspace and ⌘Delete, and `Copy`, `Cut` and `Paste` events) from the main window's
+/// input to that window's, as [`send_keys`] does; the app's other command keys stay with the
+/// main window. A menu that runs commands itself instead of reporting keys can send the text
+/// keys to this window with [`send_keys`]. An app whose own `raw_input_hook` turns the main
+/// window's ⌘V into `ViewportCommand::RequestPaste` for its text fields skips that while this
+/// is `Some`, so the field's window pastes instead.
+pub fn typing_window(ctx: &Context) -> Option<egui::ViewportId> {
+    #[cfg(feature = "native-windows")]
+    return super::render::typing_window(ctx);
+    #[cfg(not(feature = "native-windows"))]
+    {
+        let _ = ctx;
+        None
+    }
+}
+
+/// Give `events` to the native window `viewport` at the start of its next input, and repaint
+/// it (feature `native-windows`; elsewhere it does nothing). A text field copies and pastes on
+/// egui's `Copy`, `Cut` and `Paste` events, not on key presses, so ⌘C and ⌘X presses arrive as
+/// `Copy` and `Cut`, and ⌘V asks the window for the clipboard text
+/// (`ViewportCommand::RequestPaste`), which arrives as `Paste`. Other events arrive as they are.
+/// See [`typing_window`].
+pub fn send_keys(ctx: &Context, viewport: egui::ViewportId, events: Vec<egui::Event>) {
+    #[cfg(feature = "native-windows")]
+    super::render::send_keys(ctx, viewport, events);
+    #[cfg(not(feature = "native-windows"))]
+    let _ = (ctx, viewport, events);
+}
+
 /// One mutable application adapter owns bodies, menus, shaped text and per-panel policy,
 /// avoiding competing mutable closures. Logical labels are used for tab accessibility.
 /// [`DockArea::show_content`] reads every policy from here; the closures passed to the older
