@@ -233,6 +233,18 @@ fn serve_copies_the_selected_faces_and_writes_urls() {
 }
 
 #[test]
+fn serve_replaces_a_stale_copy_of_the_same_size() {
+    let scratch = Scratch::new("serve-stale");
+    let served = scratch.0.join("served");
+    let source = std::fs::read(fixture().join("fonts/sans-jp/SansJP-Regular.ttf")).unwrap();
+    std::fs::create_dir_all(served.join("sans-jp")).unwrap();
+    std::fs::write(served.join("sans-jp/SansJP-Regular.ttf"), vec![0; source.len()]).unwrap();
+    let r = run(Embed::new().scripts(&["Jpan"]).filter(|f| f.style == "Regular").serve(&served, "fonts/"), Some(&fixture()), Some("1"));
+    r.result.unwrap();
+    assert_eq!(std::fs::read(served.join("sans-jp/SansJP-Regular.ttf")).unwrap(), source);
+}
+
+#[test]
 fn integrity_is_base64_of_the_hex_hash() {
     use crate::embed::integrity;
     assert_eq!(integrity("c9d08ef1fc69f15e87ce52bda8a9c24714e4125daf7e50a40edb1aa2be10dff1"), "sha256-ydCO8fxp8V6HzlK9qKnCRxTkEl2vflCkDtsaor4Q3/E=");

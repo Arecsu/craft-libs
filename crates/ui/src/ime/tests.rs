@@ -538,3 +538,13 @@ fn a_caret_off_the_canvas_keeps_the_candidates_on_screen() {
     let r = out.platform_output.ime.map(|i| i.cursor_rect);
     assert_eq!(r, Some(Rect::from_min_size(pos2(0.0, 580.0), vec2(2.0, 20.0))));
 }
+
+#[test]
+fn a_caret_past_a_tiny_or_unbounded_screen_stays_inside_it() {
+    let caret = Rect::from_min_size(pos2(10.0, 10.0), vec2(2.0, 20.0));
+    let tiny = Rect::from_min_max(pos2(0.1, 0.1), pos2(0.5, 0.5));
+    assert_eq!(composer::caret_area(caret, tiny), Rect::from_min_size(tiny.min, tiny.size()));
+    assert_eq!(composer::caret_area(caret, Rect::EVERYTHING), caret);
+    let nan = Rect::from_min_max(pos2(0.0, 0.0), pos2(f32::NAN, 600.0));
+    assert_eq!(composer::caret_area(caret, nan), caret);
+}
