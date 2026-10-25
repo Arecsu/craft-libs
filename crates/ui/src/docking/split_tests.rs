@@ -857,16 +857,26 @@ fn the_preview_fills_the_zone_under_the_pointer_and_no_result_rect() {
     assert_eq!(zone_outlines(&d).len(), 6);
     d.key(egui::Key::Escape);
 
-    // The dock-and-canvas arrangement shows a line along the group's left edge instead.
+    // The dock-and-canvas arrangement shows the rect the panel takes there instead.
     let mut d = DockDriver::new(editing(), Film::default());
     d.screen = Rect::from_min_size(Pos2::ZERO, SCREEN);
     d.area = d.screen;
     d.settle();
-    d.hold(tab(&d, INFO), pos2(timeline.left() + 8.0, timeline.center().y + 13.0));
+    let at = pos2(timeline.left() + 8.0, timeline.center().y + 13.0);
+    d.hold(tab(&d, INFO), at);
     assert!(!d.filled_polygon(&zone_shape(timeline, 26.0, 40.0, Zone::Left).unwrap()));
     assert!(zone_outlines(&d).is_empty());
     assert!(!d.filled(zone_rect(timeline, Zone::Left).unwrap().shrink(1.0)));
-    assert!(d.filled(Rect::from_x_y_ranges(timeline.left()..=(timeline.left() + 4.0), timeline.y_range())));
+    let shapes = d.shapes().to_vec();
+    d.release(at);
+    d.settle();
+    let info = group(&d, INFO);
+    assert_eq!(info.left(), timeline.left());
+    let painted = |fill: egui::Color32, stroke: f32| {
+        shapes.iter().any(|c| matches!(&c.shape, egui::Shape::Rect(r) if r.rect == info.shrink(1.0) && r.fill == fill && r.stroke.width == stroke))
+    };
+    let accent = DockStyle::default().accent;
+    assert!(painted(accent.gamma_multiply(0.08), 0.0) && painted(egui::Color32::TRANSPARENT, 2.0), "Info's rect beside the timeline");
 }
 
 #[test]
