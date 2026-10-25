@@ -308,13 +308,18 @@ A flyout fits its content the same way, without the title bar.
   way. Towards the minimums, groups give way in proportion to their room. A group takes the
   largest default, compact and fill height of its panels. All three are body heights, without
   the tab strip, like `PanelLimits`.
-- Drop previews have two shapes, the same for tab and group drags:
-  - A drop beside something shows a `DockStyle::drop_line_width` (4 pt) accent line along the
-    whole edge it docks to: a group's edge for a split or a new group above or below it, the
-    column's width for a seam, the dock's height for a new column or dock, and the layout's
-    whole edge for the outer edge band. The line's length shows what the drop docks beside.
-  - A drop that joins a group shows a 2 pt accent outline of the whole group, with a light fill,
-    and on its strip the 2 pt insertion marker.
+- Drop previews have three shapes, the same for tab and group drags:
+  - A drop beside something shows the rect the dragged panel, group or column will take, at its
+    real position and size, as a 2 pt accent outline with a light fill. The renderer applies
+    the drop to a copy of the layout and lays it out with the code that draws it, so the rect
+    is the one the panel's group gets on release: the new frame for a split (including
+    `Placement::SplitSized`) or the outer edge band, the new group for a stack above or below
+    a dock group or on a seam, and the whole column, bar included, for a new column or dock.
+    A drop between the icon groups of an iconic column shows a `DockStyle::drop_line_width`
+    (4 pt) accent line there instead.
+  - A drop that joins a group shows the same outline and fill around the whole group, and on
+    its strip the 2 pt insertion marker.
+  - A drop that floats shows the floating rect.
 
   A drop that would leave every panel where it is, changing only sizes, shows nothing and
   changes nothing: a lone group dropped beside the group it already borders, or a frame's tab
@@ -328,7 +333,7 @@ A flyout fits its content the same way, without the title bar.
   fills the zone under the pointer. Sides the group does not take, by its permissions or
   because a split leaves no room, are not drawn; nor is the center of the group a tab comes
   from. A drop there that the zones do not show, such as the outer edge band, fills the region
-  it takes. Escape or losing window focus cancels a drag.
+  it takes, and dock drops show the line along the edge they dock to. Escape or losing window focus cancels a drag.
 - A drag in progress (a tab, group, column, window bar, native window bar or divider, in any of
   the app's windows) also ends when the layout passed to the area is not the one it drew last
   frame, with or without its returned actions applied: the app switched workspaces, ran Reset
@@ -591,7 +596,7 @@ windows from the first frame. `DockArea::native_windows(bool)` overrides the cho
     behind it. A window moving by its bar is never its own target. A point in no window is on the
     desktop.
   - *Targets and previews.* Each window draws its drop targets in its own coordinates, and the
-    window under the pointer draws the drop preview (zone, dock line, ghost) in its own frame.
+    window under the pointer draws the drop preview (zone, result rect, ghost) in its own frame.
     The source window shows only the "Hold {key} to undock" hint. The release is resolved at the
     end of the main window's frame, after every native window has drawn.
   - *Drops.* Over a window, a tab or group docks or joins there with the usual targets: dock lines
