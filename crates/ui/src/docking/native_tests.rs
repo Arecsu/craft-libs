@@ -3,7 +3,9 @@
 
 use egui::{Color32, Event, Key, Modifiers, PointerButton, Pos2, Rect, ViewportCommand, epaint::ClippedShape, pos2, vec2};
 
-use super::render::{APPKIT_CORNER, DragPointer, MACOS_CLOSE, WindowDrag, appkit_resize_areas, close_rects, floats_shown, resize_bands, wayland};
+use super::render::{
+    APPKIT_CORNER, DragPointer, MACOS_CLOSE, WindowDrag, appkit_resize_areas, close_rects, drag_opacity, floats_shown, resize_bands, wayland,
+};
 use super::testing::DockDriver;
 use super::{Action, DockContent, Floating, Hit, Layout, Monitor, Node, Permissions, Placement, Target, WindowKind, Workspace};
 use crate::layout::{SplitAxis, SplitSize};
@@ -2198,4 +2200,15 @@ fn a_tab_drag_onto_a_native_window_is_no_app_drag() {
     d.step(vec![]);
     assert!(matches!(out.actions.as_slice(), [Action::Move { panel: 1, anchor: 5 | 6, .. }]), "{:?}", out.actions);
     assert!(d.content.drops.is_empty(), "{:?}", d.content.drops);
+}
+
+#[test]
+fn a_native_window_fades_only_while_its_drag_can_dock() {
+    let drag = |docks| WindowDrag { window: 1, grab: vec2(10.0, 10.0), to: pos2(100.0, 100.0), start: pos2(100.0, 100.0), docks };
+    assert_eq!(drag_opacity(None, true), 1.0);
+    // A bar drag that only moves the window stays opaque.
+    assert_eq!(drag_opacity(Some(&drag(false)), false), 1.0);
+    assert_eq!(drag_opacity(Some(&drag(false)), true), 0.75);
+    // A drag by the window's only tab or group docks either way.
+    assert_eq!(drag_opacity(Some(&drag(true)), false), 0.75);
 }
