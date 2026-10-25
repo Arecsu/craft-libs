@@ -40,6 +40,9 @@ struct Harness {
 }
 
 impl Harness {
+    /// Create a workflow harness with the requested theme, width and pixel scale,
+    /// zero animation and no cursor blink, and a canvas plus side tabs and floating
+    /// brushes layout, then settle it.
     fn new(dark: bool, width: f32, scale: f32) -> Self {
         let ctx = Context::default();
         ctx.set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
@@ -177,6 +180,7 @@ impl Harness {
         self.layout.validate().unwrap();
     }
 
+    /// Run four empty workflow frames to settle sizing.
     fn settle(&mut self) {
         for _ in 0..4 {
             self.step(Vec::new());

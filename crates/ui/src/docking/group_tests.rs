@@ -59,6 +59,8 @@ struct TestContent {
 }
 
 impl DockContent<u32> for TestContent {
+    /// Test body that fills its rect when `fill` is set, otherwise takes the
+    /// configured height or draws a one-line `Body` label.
     fn body(&mut self, ui: &mut egui::Ui, _: &u32) {
         if self.fill {
             ui.allocate_rect(ui.max_rect(), egui::Sense::hover());
@@ -72,6 +74,8 @@ impl DockContent<u32> for TestContent {
     fn logical_label(&self, panel: &u32) -> String {
         format!("Panel {panel}")
     }
+    /// Mark panels in `protected` as protected and leave the rest with default
+    /// permissions.
     fn permissions(&self, panel: &u32) -> Permissions {
         if self.protected.contains(panel) { Permissions::PROTECTED } else { Permissions::default() }
     }
@@ -114,6 +118,8 @@ impl Driver {
         Self::with(layout, TestContent::default(), Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 600.0)))
     }
 
+    /// Create a group test driver for `layout`, `content` and `area`, then settle
+    /// two frames.
     fn with(layout: Layout<u32>, content: TestContent, area: Rect) -> Self {
         let mut driver = Self {
             ctx: Context::default(),
@@ -162,6 +168,8 @@ impl Driver {
         output
     }
 
+    /// Run one frame, assert it reports no error, and apply each returned action
+    /// with the content's permissions.
     fn step(&mut self, events: Vec<Event>) -> DockOutput<u32> {
         let output = self.frame(events);
         assert!(output.error.is_none(), "{output:?}");
@@ -172,10 +180,13 @@ impl Driver {
         output
     }
 
+    /// Read the response rectangle for the dock widget named `name` and scoped to
+    /// `panel`.
     fn rect(&self, name: &str, panel: u32) -> Rect {
         self.ctx.read_response(Id::unique(AREA).with((name, Some(&panel)))).unwrap().rect
     }
 
+    /// Read the response rectangle for `panel`'s tab.
     fn tab(&self, panel: u32) -> Rect {
         self.ctx.read_response(Id::unique(AREA).with(("tab", &panel))).unwrap().rect
     }
@@ -222,6 +233,9 @@ fn moved_group(actions: &[Action<u32>]) -> Option<&Target<u32>> {
 }
 
 #[test]
+/// A group bar dropped on another strip emits one `MoveGroup` and keeps panel
+/// order and the active panel; dropped on empty space it floats at its docked
+/// width and 600 pt height; inside a column it joins the group below.
 fn docked_two_tab_group_drags_by_its_bar_and_keeps_order_and_active_tab() {
     // Onto another group's strip: one MoveGroup, both panels in order, 3 still selected.
     let mut d = Driver::new(frames());
@@ -376,6 +390,8 @@ fn group_drop_on_a_frame_edge_splits_and_on_a_protected_canvas_floats() {
 }
 
 #[test]
+/// Holding Ctrl or Command at release turns either a group-bar drop or a tab
+/// drop into a float instead of a dock.
 fn ctrl_or_cmd_held_at_release_always_floats() {
     for modifiers in [Modifiers::CTRL, Modifiers::MAC_CMD, Modifiers::COMMAND] {
         let mut d = Driver::new(frames());
@@ -528,6 +544,8 @@ fn floating_border_and_drag_bar_move_and_cancel_as_a_group() {
 }
 
 #[test]
+/// Moving a floating window by eight fractional pointer steps lands within one
+/// point of the accumulated 80.3 × 60.7 pt offset, without step-rounding drift.
 fn floating_border_movement_does_not_accumulate_fractional_step_rounding() {
     let layout = Layout { root: Some(tabs(&[1], 0)), floating: vec![Floating::single(vec![5, 6], 1, [80.0, 70.0, 300.0, 220.0])] };
     let mut d = Driver::new(layout);
@@ -542,6 +560,8 @@ fn floating_border_movement_does_not_accumulate_fractional_step_rounding() {
 }
 
 #[test]
+/// With host-owned headers, dragging either the border or the bar reaches
+/// `whole_group`, emits no action or group drop, and leaves the layout unchanged.
 fn docked_header_drag_reaches_the_host_hook_and_preserves_the_group() {
     for name in ["drag-border", "drag-bar"] {
         let content = TestContent { host_owned: true, ..Default::default() };
@@ -559,7 +579,9 @@ fn docked_header_drag_reaches_the_host_hook_and_preserves_the_group() {
 fn a_lone_protected_panel_draws_no_strip_and_no_bar() {
     struct Bare;
     impl DockContent<u32> for Bare {
+        /// A bare content body that draws nothing.
         fn body(&mut self, _: &mut egui::Ui, _: &u32) {}
+        /// Mark panel 1 protected and leave every other panel with default permissions.
         fn permissions(&self, panel: &u32) -> Permissions {
             if *panel == 1 { Permissions::PROTECTED } else { Permissions::default() }
         }
@@ -615,6 +637,8 @@ fn drag_bar_menu_has_the_group_items_and_opens_from_the_keyboard() {
 }
 
 #[test]
+/// Dragging one group out of a two-group floating stack floats only that group
+/// at the stack width and its recorded height in the stack.
 fn a_group_dragged_out_of_a_floating_stack_tears_out_alone() {
     let stack = Floating::stack(vec![Group::new(vec![5], 0), Group::new(vec![6, 7], 1)], [80.0, 70.0, 300.0, 400.0]).unwrap();
     let layout = Layout { root: Some(tabs(&[1], 0)), floating: vec![stack] };
@@ -671,6 +695,8 @@ fn a_short_docked_panel_floats_at_its_content_height_up_to_its_floating_size() {
 }
 
 #[test]
+/// A fill-height panel floats at the 320 pt docked cap without a host size
+/// and at the host's height when one is supplied.
 fn a_panel_that_fills_its_frame_floats_at_its_floating_size_or_320() {
     let float = |floating_size: Option<Vec2>| {
         let content = TestContent { fill: true, floating_size, ..Default::default() };

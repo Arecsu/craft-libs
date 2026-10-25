@@ -848,6 +848,7 @@ fn body_input_key() -> Id {
 pub(in crate::docking) type InputHook = Box<dyn FnMut(&Context, &mut RawInput) + Send>;
 
 impl egui::Plugin for NativeInput {
+    /// The egui plugin's diagnostic name, `craft-ui docking native input`.
     fn debug_name(&self) -> &'static str {
         "craft-ui docking native input"
     }

@@ -19,6 +19,8 @@ fn observe_repaints(ctx: &Context) -> Arc<Mutex<Vec<ViewportId>>> {
 #[test]
 /// Compile-time assertion that `CaptureSlot` and `ScreenshotCallback` are `Send + Sync`.
 fn slot_is_send_and_sync() {
+    /// Compile-time helper requiring `T: Send + Sync`; the enclosing test uses it to
+    /// assert the public capture types are thread-safe.
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<CaptureSlot>();
     assert_send_sync::<ScreenshotCallback>();

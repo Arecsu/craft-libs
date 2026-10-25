@@ -73,6 +73,8 @@ impl DockContent<u32> for GalleyLabels {
     fn logical_label(&self, panel: &u32) -> String {
         format!("Character Styles {panel}")
     }
+    /// Host-provided galley label that lays the logical text out without wrapping,
+    /// letting the dock handle pre-shaped widget text.
     fn label(&mut self, ui: &egui::Ui, _: &u32, logical: &str, font: &egui::FontId, color: Color32) -> egui::WidgetText {
         egui::WidgetText::Galley(ui.painter().layout_no_wrap(logical.to_owned(), font.clone(), color))
     }
@@ -162,6 +164,8 @@ fn double_click_on_a_tab_of_a_minimized_group_ends_expanded() {
 }
 
 #[test]
+/// Double-clicking the active tab of a minimized floating window or docked
+/// group expands it; a second double-click minimizes the docked group again.
 fn double_click_on_the_active_tab_of_a_minimized_group_or_window_ends_expanded() {
     let window = Floating { minimized: true, ..Floating::single(vec![5, 6], 1, [80.0, 70.0, 300.0, 220.0]) };
     let mut d = Driver::new(Layout { root: Some(tabs(&[1], 0)), floating: vec![window] });
@@ -268,6 +272,9 @@ fn a_press_in_a_stripless_panel_reports_it_focused() {
 }
 
 #[test]
+/// In a right-to-left strip the first tab sits at the right edge and the bar
+/// lies to its left; drops just right of the first tab insert before panel 2,
+/// and insertion slots are mirrored at the strip edges.
 fn right_to_left_mirrors_the_tab_strip_and_its_insertion_slots() {
     let mut d = Driver::with(frames(), TestContent { header: 30.0, ..Default::default() }, AREA_600);
     d.tweak = |style| style.right_to_left = true;
@@ -360,6 +367,8 @@ fn hidden_close_controls_leave_closing_to_the_host() {
 }
 
 #[test]
+/// `apply_all` returns every panel closed by close-others and close-window in
+/// order, leaving the remaining panel open until a later `apply` closes it.
 fn apply_all_returns_every_panel_its_actions_closed() {
     let mut layout = Layout { root: Some(tabs(&[1, 2, 3], 0)), floating: vec![Floating::single(vec![5, 6], 0, [80.0, 70.0, 300.0, 220.0])] };
     let closed = layout

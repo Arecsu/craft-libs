@@ -472,6 +472,8 @@ fn saved_layout_and_hidden_location_round_trip() {
 
 #[cfg(feature = "serde")]
 #[test]
+/// Deserialize an older hidden `Location` without a `sibling` field; the
+/// missing list stays empty and the anchor panel is preserved.
 fn old_hidden_locations_accept_panel_ids_without_a_default_identity() {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     enum Panel {
@@ -515,6 +517,8 @@ fn frame(ctx: &Context, layout: &Layout<u32>, events: Vec<Event>, focused: bool)
 }
 
 #[test]
+/// Moving a panel from a root tab into a floating window keeps its body scope
+/// id across frames.
 fn renderer_keeps_content_identity_when_panel_moves_into_a_float() {
     let ctx = Context::default();
     let mut layout = Layout { root: Some(tabs(&[1], 0)), floating: Vec::new() };
@@ -564,6 +568,7 @@ fn step(ctx: &Context, layout: &mut Layout<u32>, events: Vec<Event>) -> Vec<Acti
     out.actions
 }
 
+/// A primary-button pointer event at `pos` with `pressed` and no modifiers.
 fn pointer_button(pos: egui::Pos2, pressed: bool) -> Event {
     Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE }
 }
@@ -812,6 +817,8 @@ fn split_inner_edge_remains_draggable_beside_a_scrollbar() {
 }
 
 #[test]
+/// Closing a panel in a nested vertical/horizontal layout and restoring its
+/// saved location reproduces the complete layout.
 fn restoring_a_panel_beside_a_nested_subtree_preserves_the_complete_workspace() {
     let mut layout = Layout {
         root: Some(Node::Split {
@@ -968,6 +975,8 @@ fn floating_group_touch_release_reports_drop_after_pointer_gone() {
 }
 
 #[test]
+/// A floating group drag cancelled by pointer loss, with or without Escape, restores the
+/// original floating rect and emits no group drag or drop.
 fn floating_group_exit_with_escape_or_focus_loss_restores_original_geometry() {
     for escape in [false, true] {
         let ctx = Context::default();
@@ -1035,13 +1044,17 @@ impl DockContent<u32> for CustomContent {
         self.labels.push(logical.to_owned());
         ui.painter().layout_no_wrap("Custom visual label".into(), font.clone(), color).into()
     }
+    /// Custom visual action label that prefixes the logical text with
+    /// `Action visual: `.
     fn action_label(&mut self, ui: &egui::Ui, logical: &str, font: &egui::FontId, color: egui::Color32) -> egui::WidgetText {
         ui.painter().layout_no_wrap(format!("Action visual: {logical}"), font.clone(), color).into()
     }
+    /// Record an app menu draw and emit a clickable `App menu` button.
     fn panel_menu(&mut self, ui: &mut egui::Ui, _: &u32) {
         self.menus += 1;
         ui.button("App menu").clicked();
     }
+    /// Test custom chrome declares a 40 pt group header width.
     fn group_header_width(&self, _: &[u32], _: &u32, _: bool, _: f32) -> f32 {
         40.0
     }
@@ -1054,6 +1067,8 @@ impl DockContent<u32> for CustomContent {
     }
 }
 
+/// Run one 800×600 customized dock frame with optional blockers and a
+/// programmatic raise of panel 5; returns the output with texture deltas cleared.
 fn custom_frame(
     ctx: &Context,
     layout: &Layout<u32>,
@@ -1077,6 +1092,9 @@ fn custom_frame(
 }
 
 #[test]
+/// Custom chrome receives logical labels, draws custom headers and bodies and app-menu
+/// popups, while a programmatic raise sets no user focus or focus ring and emits
+/// no action.
 fn custom_chrome_shaped_labels_and_programmatic_raise_are_available() {
     let ctx = Context::default();
     let layout = sample();
@@ -1128,6 +1146,7 @@ fn overlay_appearing_mid_drag_blocks_release_and_float_fallback() {
 }
 
 #[test]
+/// Escape during a floating group move restores the original floating rect.
 fn group_move_escape_restores_original_geometry() {
     let ctx = Context::default();
     let mut layout = sample();
@@ -1248,6 +1267,8 @@ fn resize_floating_group(permissions: impl Fn(&u32) -> Permissions + Copy) -> Ve
 }
 
 #[test]
+/// A floating group's grip resizes a movable group, but a group containing
+/// protected panel 6 blocks the `MoveFloating` action.
 fn protected_group_member_blocks_floating_group_resize() {
     let moved = |actions: &[Action<u32>]| actions.iter().any(|a| matches!(a, Action::MoveFloating { .. }));
     assert!(moved(&resize_floating_group(|_| Permissions::default())), "the grip resizes a movable group");
@@ -1455,6 +1476,8 @@ fn workspace_cancel_preserves_other_area_and_body_drag_ownership() {
 /// logical accessibility names; the visual text is not exposed as an accessibility label.
 fn popup_action_labels_use_custom_visual_text_and_logical_accessibility() {
     use egui_kittest::{Harness, kittest::Queryable};
+    /// Recursively search a shape or shape vector for a text galley whose text is
+    /// exactly `text`.
     fn paints(shape: &egui::Shape, text: &str) -> bool {
         match shape {
             egui::Shape::Text(shape) => shape.galley.text() == text,
@@ -1658,6 +1681,8 @@ fn collapsed_floating_height_cap_does_not_disable_keyboard_width_resizing() {
 }
 
 #[test]
+/// Dropping a panel back on its own singleton or multi-tab source body is an
+/// explicit no-op with no insertion marker, with or without split permission.
 fn returning_to_a_singleton_or_floating_source_body_is_an_explicit_noop() {
     for panels in [vec![1u32], vec![1, 2, 3]] {
         for allow_splits in [false, true] {
@@ -1722,6 +1747,8 @@ fn pointer_floating_resize_stops_at_edges_and_waits_for_cursor_to_return() {
 }
 
 #[test]
+/// Dropping a panel within its existing tab slots is a no-op whose insertion
+/// marker stays inside the strip; positions outside its own slots move it.
 fn unchanged_tab_slots_are_explicit_noops_with_bounded_insertion_markers() {
     let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 200.0));
     let target = DropTarget {
@@ -1758,6 +1785,8 @@ fn host_owned_noop_consumes_release_without_a_fallback_float() {
     struct Content(usize);
     impl DockContent<u32> for Content {
         fn body(&mut self, _ui: &mut egui::Ui, _panel: &u32) {}
+        /// Test drop handler that counts releases and accepts every request with
+        /// default feedback, consuming host-owned drops.
         fn resolve_drag(&mut self, _ctx: &Context, _style: &DockStyle, request: &DropRequest<'_, u32>) -> Option<DropFeedback> {
             if request.released {
                 self.0 += 1;
@@ -1828,6 +1857,8 @@ fn overflow_noop_detection_uses_logical_order_including_hidden_tabs() {
 }
 
 #[test]
+/// For clipped and singleton strips of several widths, a no-op drop keeps its
+/// insertion marker inside the visible strip and at most 2 pt wide.
 fn insertion_markers_stay_inside_clipped_and_singleton_strips() {
     for width in [0.5, 1.0, 20.0, 140.0] {
         let rect = Rect::from_min_size(pos2(10.0, 20.0), vec2(width, 200.0));
@@ -1854,6 +1885,8 @@ fn insertion_markers_stay_inside_clipped_and_singleton_strips() {
 }
 
 #[test]
+/// A subpixel-wide tab strip crossing zero still yields a no-op insertion
+/// marker contained by the strip.
 fn insertion_marker_handles_subpixel_strip_crossing_zero_without_panicking() {
     let rect = Rect::from_min_max(pos2(-0.001, 0.0), pos2(0.002, 30.0));
     let target =

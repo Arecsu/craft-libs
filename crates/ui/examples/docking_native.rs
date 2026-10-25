@@ -14,6 +14,7 @@ impl DockContent<u32> for Panels {
         ui.label(format!("Body of panel {panel}"));
     }
 
+    /// Return the example content's logical and accessibility label, `Panel {panel}`.
     fn logical_label(&self, panel: &u32) -> String {
         format!("Panel {panel}")
     }

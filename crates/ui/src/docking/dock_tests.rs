@@ -100,6 +100,8 @@ impl Driver {
         })
     }
 
+    /// Run three empty frames so floating areas finish their sizing pass, then
+    /// return the driver.
     fn start(mut driver: Self) -> Self {
         // Floating areas settle after their sizing pass.
         for _ in 0..3 {
@@ -144,10 +146,13 @@ impl Driver {
         output
     }
 
+    /// Read the response rectangle for the dock widget named `name` and scoped to
+    /// `panel`.
     fn rect(&self, name: &str, panel: u32) -> Rect {
         self.ctx.read_response(Id::unique(AREA).with((name, Some(&panel)))).unwrap().rect
     }
 
+    /// Read the response rectangle for `panel`'s tab.
     fn tab(&self, panel: u32) -> Rect {
         self.ctx.read_response(Id::unique(AREA).with(("tab", &panel))).unwrap().rect
     }
@@ -413,6 +418,8 @@ fn tab_dragged_to_the_window_edge_without_a_dock_makes_a_dock_of_that_panel() {
 }
 
 #[test]
+/// A group dropped on a column's tab strip joins as a tab, on a group body
+/// appends as its last tab, and in the empty space below starts a new group.
 fn a_column_takes_groups_anywhere_in_it_and_as_tabs() {
     let windows = [(5, [400.0, 40.0, 150.0, 120.0]), (6, [400.0, 220.0, 150.0, 120.0]), (7, [400.0, 400.0, 150.0, 120.0])];
     let mut d = Driver::new(with_floating(docked(Side::Start, &[&[&[2], &[3]]]), &windows));
@@ -461,6 +468,8 @@ fn a_column_too_tall_for_the_window_scrolls() {
 }
 
 #[test]
+/// Dragging a column bar to the window edge moves the column first; dragging it
+/// away from the dock floats every group in the column and shows a follow ghost.
 fn column_bar_drag_moves_the_column_and_away_from_a_dock_floats_its_groups() {
     let mut d = Driver::new(docked(Side::Start, &[&[&[2], &[3]], &[&[5]]]));
     // The second column to the window edge: it becomes the first.
@@ -619,6 +628,8 @@ fn right_to_left_mirrors_docks_their_edges_and_new_docks() {
 }
 
 #[test]
+/// Dropping a column's first tab just past its own edge anchors it after the
+/// other column's panel; a panel alone in its column stays in place.
 fn a_column_s_first_tab_dropped_on_its_own_column_edge_anchors_on_another_panel() {
     // Two columns, 0..240 and 240..480; the dragged tab is the first panel of the last one.
     let wide = |columns: &[&[&[u32]]]| {

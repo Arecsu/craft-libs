@@ -177,10 +177,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Synthetic tab widths from 40 to 119 pt, cycling with `(i * 17) % 80`.
 fn tab_widths(count: usize) -> Vec<f32> {
     (0..count).map(|i| 40.0 + ((i * 17) % 80) as f32).collect()
 }
 
+/// Synthetic toolbar widths from 24 to 71 pt, cycling with `(i * 13) % 48`.
 fn toolbar_widths(count: usize) -> Vec<f32> {
     (0..count).map(|i| 24.0 + ((i * 13) % 48) as f32).collect()
 }
@@ -263,6 +265,8 @@ fn font_definitions() -> Result<(egui::FontDefinitions, Vec<String>), Box<dyn Er
     Ok((fonts, names))
 }
 
+/// Describe the report's font source: the pinned `CRAFT_UI_PERF_FONT` file when
+/// set, otherwise egui's bundled default fonts.
 fn font_source() -> &'static str {
     if env::var_os("CRAFT_UI_PERF_FONT").is_some() { "CRAFT_UI_PERF_FONT (pinned fixture file)" } else { "egui default_fonts (bundled)" }
 }
@@ -281,6 +285,7 @@ fn context(scale: f32, fonts: &egui::FontDefinitions) -> Context {
     ctx
 }
 
+/// A headless screen rectangle from `(0, 0)` to `viewport[0] × viewport[1]`.
 fn screen_rect(viewport: [f32; 2]) -> Rect {
     Rect::from_min_size(pos2(0.0, 0.0), vec2(viewport[0], viewport[1]))
 }
@@ -424,6 +429,7 @@ fn dock_layout(panels: u32, with_floating: bool) -> Layout<u32> {
     }
 }
 
+/// Return the benchmark content's logical label, `Panel {panel}`.
 fn panel_label(panel: &u32) -> String {
     format!("Panel {panel}")
 }

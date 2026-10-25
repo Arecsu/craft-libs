@@ -109,6 +109,7 @@ struct Driver {
 }
 
 impl Driver {
+    /// Create a floating test driver and run two empty frames to settle sizing.
     fn new(layout: Layout<u32>, split_tree: bool) -> Self {
         let mut driver = Self {
             ctx: Context::default(),
@@ -172,10 +173,12 @@ impl Driver {
         self.ctx.read_response(id).map(|r| r.rect)
     }
 
+    /// Read the response rectangle of the move bar whose first panel is `first`.
     fn title(&self, first: u32) -> Rect {
         self.response(Id::unique(AREA).with(("move-group", Some(&first)))).unwrap()
     }
 
+    /// Read `panel`'s tab response rectangle, or `None` when it is not rendered.
     fn tab(&self, panel: u32) -> Option<Rect> {
         self.response(Id::unique(AREA).with(("tab", &panel)))
     }
@@ -261,6 +264,8 @@ fn title_bar_drag_moves_every_stacked_group_and_drops_into_a_dock_as_stacked_gro
 }
 
 #[test]
+/// Releasing a floating window's title bar on a dock seam stacks its group
+/// between the target groups; releasing on the edge band makes an end dock.
 fn title_bar_drag_onto_dock_targets_docks_the_window() {
     // Released on the seam between two docked groups: the window's group stacks between them.
     let mut d = Driver::new(workspace(), false);
@@ -398,6 +403,8 @@ fn outer_edge_band_splits_at_the_root() {
 }
 
 #[test]
+/// With split-tree chrome, a drop 7 pt inside the outer edge targets the edge
+/// dock, while a drop at 10 pt targets frame [1]'s split zone.
 fn the_split_tree_outer_edge_band_is_8_pt() {
     let mut d = Driver::new(frames(), true);
     let tab = d.tab(3).unwrap().center();
@@ -481,6 +488,8 @@ fn close_other_panels_keeps_only_the_chosen_tab() {
 }
 
 #[test]
+/// Hiding every panel draws no tabs and leaves the layout unchanged; the
+/// `Except` set keeps only its panels, with a retained window below the resize band.
 fn hide_panels_keeps_protected_panels_and_the_except_set() {
     let mut d = Driver::new(workspace(), false);
     d.hide = Hide::All;
@@ -521,6 +530,8 @@ fn a_canvas_that_accepts_splits_is_still_protected() {
 }
 
 #[test]
+/// When viewports are embedded, a floating window marked native draws in the
+/// main window at its usual rect without emitting actions.
 fn native_window_falls_back_in_window_when_viewports_are_embedded() {
     let mut layout = workspace();
     layout.floating[0].native = Some([1200.0, 900.0, 240.0, 300.0]);
@@ -663,6 +674,8 @@ fn hidden_panels_leave_their_split_and_resizing_names_the_layout_path() {
 }
 
 #[test]
+/// Hiding floating window 5 removes its coverage of the dock seam, so dragging
+/// window 8 there stacks its group between panels 3 and 4.
 fn a_hidden_floating_window_does_not_cover_dock_targets() {
     // Window 5 covers the column's seam at x 150..240 until it is hidden.
     let mut layout = workspace();

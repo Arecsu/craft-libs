@@ -1491,6 +1491,8 @@ fn the_bars_close_button_wins_over_the_resize_bands() {
 }
 
 #[test]
+/// Resize bands avoid the close button, are at most 6 pt deep, use 16 pt
+/// corners along each edge, and leave the bar below the top band inert.
 fn resize_bands_are_a_few_points_deep_and_leave_out_the_bar_buttons() {
     let rect = Rect::from_min_size(Pos2::ZERO, vec2(240.0, 300.0));
     let close = Rect::from_center_size(pos2(224.0, 9.0), vec2(18.0, 18.0));
@@ -1624,6 +1626,9 @@ fn dimmed(d: &DockDriver<u32, Content>, viewport: egui::ViewportId) -> bool {
 }
 
 #[test]
+/// While input is blocked, a native window is dimmed, loses always-on-top,
+/// ignores clicks, drags, key presses and close requests, but still forwards key
+/// releases; unblocking restores normal input and activation.
 fn a_native_window_takes_no_input_while_the_app_blocks_it() {
     let mut d = blocked_driver();
     let id = id_of(&d);
@@ -2238,6 +2243,8 @@ fn escape_and_cancel_drag_end_the_routing_of_an_app_drag() {
 }
 
 #[test]
+/// Dragging a tab onto a native window's body emits a tab `Move` rather than
+/// an app body drag and leaves the content's drops empty.
 fn a_tab_drag_onto_a_native_window_is_no_app_drag() {
     let mut d = app_drag(layout(true), 1, &[5]);
     let id = window(&d, 5).id;

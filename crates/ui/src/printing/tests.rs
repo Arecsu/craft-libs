@@ -144,6 +144,9 @@ fn failed_discovery_cannot_reuse_a_previously_available_queue() {
 }
 
 #[test]
+/// Only one print job can be active: a second `begin` fails, the receiver stays
+/// with the job, and submission, queue refusal and a dropped worker report
+/// `Submitted`, `Failed` and `WorkerStopped` while returning to ready.
 fn active_jobs_keep_their_receiver_and_report_receipt_refusal_or_worker_failure() {
     let ctx = egui::Context::default();
     let mut state = State::default();

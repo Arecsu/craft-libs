@@ -108,6 +108,8 @@ impl Draw<'_, '_> {
         }
     }
 
+    /// Translate the note shown for an approximated imported shortcut; currently
+    /// only the numeric-keypad read-as-main-key note exists.
     fn read_note(&self, n: ReadNote) -> String {
         match n {
             ReadNote::Numpad => self.ui("numeric keypad key read as main key"),

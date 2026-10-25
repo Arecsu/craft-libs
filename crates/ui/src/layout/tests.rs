@@ -107,6 +107,8 @@ struct HandleTest {
 }
 
 impl HandleTest {
+    /// Create a handle test with horizontal axis, a 4×140 pt rect, the label
+    /// `Resize panels`, enabled state and value 100.
     fn new() -> Self {
         let ctx = Context::default();
         ctx.enable_accesskit();

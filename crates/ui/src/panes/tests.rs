@@ -29,6 +29,8 @@ impl PaneContent<Pane> for Content {
     fn body(&mut self, ui: &mut Ui, pane: &Pane) {
         ui.label(format!("{pane:?} body"));
     }
+    /// Default docked pane state: end for Comments and Pivot, start otherwise,
+    /// with a 250 pt size.
     fn default_state(&self, pane: &Pane) -> PaneState {
         let edge = if matches!(pane, Pane::Comments | Pane::Pivot) { Edge::End } else { Edge::Start };
         PaneState::docked(edge, 250.0)
@@ -53,6 +55,8 @@ struct App {
 }
 
 impl App {
+    /// Create an app with `open` panes, empty state and log, no focused pane, no
+    /// document-focus requests, left-to-right layout and column side policy.
     fn new(open: &[Pane]) -> Self {
         Self { open: open.to_vec(), states: HashMap::new(), log: Vec::new(), focused: None, to_document: 0, rtl: false, policy: SidePolicy::Columns }
     }
@@ -85,6 +89,8 @@ impl App {
     }
 }
 
+/// Build an 800×600 harness around `App::frame`, mark input focused, and run
+/// two frames before returning it.
 fn harness(app: App) -> Harness<'static, App> {
     let mut h = Harness::builder().with_size(vec2(800.0, 600.0)).build_ui_state(|ui, app: &mut App| app.frame(ui), app);
     h.input_mut().focused = true;
@@ -324,6 +330,8 @@ fn float_rect_is_finite_and_inside_the_bounds() {
 
 #[cfg(feature = "serde")]
 #[test]
+/// A `PaneState` with a docked edge, size and float rect serializes to JSON and
+/// deserializes back unchanged.
 fn pane_state_round_trips_through_json() {
     let state = PaneState { place: Place::Docked(Edge::End), size: Some(280.0), float_rect: Some([1.0, 2.0, 270.0, 480.0]) };
     let json = serde_json::to_string(&state).unwrap();
@@ -339,6 +347,7 @@ fn a_body_wider_than_its_pane_is_clipped_and_the_document_starts_at_the_pane_edg
         fn title(&self, pane: &Pane) -> String {
             format!("{pane:?}")
         }
+        /// A pane body that requests 400×40 pt inside its pane to exercise clipping.
         fn body(&mut self, ui: &mut Ui, _: &Pane) {
             ui.allocate_exact_size(vec2(400.0, 40.0), Sense::hover());
         }

@@ -103,6 +103,9 @@ fn widening_an_iconic_column_shows_labels() {
 }
 
 #[test]
+/// An icon click activates its panel and opens a canvas-side flyout; another
+/// icon switches it, and the same icon closes it even with auto-collapse off. Escape
+/// and outside presses close it only with auto-collapse on; a programmatic raise opens it.
 fn icon_click_opens_a_flyout_on_the_canvas_side_and_auto_collapse_closes_it() {
     let mut d = DockDriver::new(docked(&[&[1, 2], &[3]], true), Content);
     let icon = hit(&d, Hit::Icon(2)).center();

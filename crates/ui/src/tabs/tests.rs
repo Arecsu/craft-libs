@@ -127,6 +127,8 @@ struct TabTest {
 }
 
 impl TabTest {
+    /// Create a two-tab test with duplicate `Layers` labels, the first selected and
+    /// enabled, click sense, a 90×26 pt rect and zero counters.
     fn new() -> Self {
         let ctx = Context::default();
         ctx.enable_accesskit();

@@ -117,6 +117,8 @@ fn click(h: &mut Harness<'_, Fx>, label: &str) {
     h.run();
 }
 
+/// Click the widget carrying `label` and run a frame; used to put a command row
+/// into the snapshot's selected state.
 fn select(h: &mut Harness<'_, Fx>, label: &str) {
     h.get_by_label(label).click();
     h.run();

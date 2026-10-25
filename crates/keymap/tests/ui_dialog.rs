@@ -61,6 +61,7 @@ impl Fx {
         self.km.bindings(&CommandRef::from(id)).iter().map(|b| b.to_string()).collect()
     }
 
+    /// Whether any outcome recorded by the dialog harness is `Outcome::Cancel`.
     fn canceled(&self) -> bool {
         self.outcomes.iter().any(|o| matches!(o, Outcome::Cancel))
     }
