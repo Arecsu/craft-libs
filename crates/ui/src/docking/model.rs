@@ -61,15 +61,16 @@ pub struct StackEntry<P> {
 /// Serde reads the v1 shape `{panels, active, rect}` as one group, and a stack of groups
 /// `{groups, rect}` as a vertical split of them, sized by their heights. A window with one
 /// group (not minimized, no native rect) writes the v1 shape, so older builds can read files
-/// that use no newer feature. A native window also writes its `id`; any other window gets a
-/// fresh one on load.
+/// that use no newer feature. Every window writes its `id`; a window read without one gets a
+/// fresh one.
 ///
 /// Equality ignores `id`: two windows with the same contents and place are the same layout.
 #[derive(Clone, Debug)]
 pub struct Floating<P> {
     /// Names the window across panel moves, and its OS window with feature `native-windows`.
-    /// Unique within a layout: [`Self::new`] and loading draw fresh ids, [`Self::with_id`]
-    /// sets one, and merging windows keeps the receiving window's.
+    /// Unique within a layout: [`Self::new`] draws a fresh id, [`Self::with_id`] sets one,
+    /// loading keeps the saved id (or draws one when it is missing or taken), and merging
+    /// windows keeps the receiving window's.
     pub id: u64,
     /// `Split`, `Tabs` and `Stack` nodes; a `Dock` is invalid here.
     pub root: Node<P>,
@@ -181,6 +182,7 @@ mod floating_serde {
 
     #[derive(Serialize)]
     struct V1<'a, P> {
+        id: u64,
         panels: &'a [P],
         active: usize,
         rect: [f32; 4],
@@ -188,8 +190,7 @@ mod floating_serde {
 
     #[derive(Serialize)]
     struct Tree<'a, P> {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        id: Option<u64>,
+        id: u64,
         root: &'a Node<P>,
         rect: [f32; 4],
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -206,10 +207,10 @@ mod floating_serde {
         fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
             match &self.root {
                 Node::Tabs { panels, active } if !self.minimized && self.native.is_none() => {
-                    V1 { panels, active: *active, rect: self.rect }.serialize(serializer)
+                    V1 { id: self.id, panels, active: *active, rect: self.rect }.serialize(serializer)
                 }
                 root => Tree {
-                    id: self.native.map(|_| self.id),
+                    id: self.id,
                     root,
                     rect: self.rect,
                     native: self.native,
