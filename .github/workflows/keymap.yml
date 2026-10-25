@@ -23,7 +23,7 @@ jobs:
     env:
       CRAFT_FONTS_DIR: ${{ github.workspace }}/.test-inputs/craft-fonts
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Checkout test fonts
@@ -60,7 +60,7 @@ jobs:
     env:
       CRAFT_FONTS_DIR: ${{ github.workspace }}/.test-inputs/craft-fonts
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Checkout test fonts
@@ -80,7 +80,7 @@ jobs:
     name: Keymap WASM
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
