@@ -215,7 +215,9 @@ A flyout fits its content the same way, without the title bar.
 - A tab drags one panel. A group's drag bar (the space beside its tabs) or its top border drags
   the whole group. A column bar drags a column. A floating window's title bar drags the window;
   with `title_bar_docks` a release over a target docks the whole window there, else it only
-  moves.
+  moves. While the drag highlights a drop target, the window is drawn at 75% opacity so the
+  target shows through it; over empty space, and once the drag ends, it is opaque. A native
+  window moved by its only tab or tab row fades the same way.
 - Inside a floating window, tabs and drag bars drag and dock as they do in the docked layout,
   into any window. A drag bar or border of a window's only group takes the whole window along,
   so, like the title bar, it looks through the window: the groups, docks and windows behind it

@@ -33,6 +33,11 @@ const DOCKED_FLOAT_HEIGHT: f32 = 320.0;
 /// Least height of a floating window or flyout fitted to a short panel's content.
 pub(super) const MIN_FITTED_HEIGHT: f32 = 120.0;
 
+/// Key of whether the area's group drag highlighted a drop target on the last frame, under the
+/// area's id. An in-window floating window that its bar drag moves fades from it on the next
+/// frame: the window draws before the preview.
+pub(super) const GROUP_HIGHLIGHTED: &str = "group-drag-highlighted";
+
 /// What finishing a drag reads of the pointer, in the coordinates of the window finishing it.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct DragInput {
@@ -71,6 +76,7 @@ impl DragInput {
 impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
     pub(in crate::docking) fn finish_group_drag(&mut self, ui: &Ui) {
         let ctx = ui.ctx();
+        ctx.data_mut(|d| d.remove::<bool>(self.id.with(GROUP_HIGHLIGHTED)));
         let key = self.id.with("group-drag");
         let Some(drag) = ctx.data(|d| d.get_temp::<GroupDrag<P>>(key)) else { return };
         if !drag.members.iter().all(|p| self.layout.contains(p) && self.permissions(p).movable) {
@@ -122,7 +128,9 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             }
         } else if let Some(pointer) = pointer.filter(|p| !self.blockers.iter().any(|r| r.contains(*p))) {
             self.output.group_drag = Some(drag.panel.clone());
-            self.paint_group_drag(ui, &drag, pointer, float_only);
+            if self.paint_group_drag(ui, &drag, pointer, float_only) {
+                ctx.data_mut(|d| d.insert_temp(self.id.with(GROUP_HIGHLIGHTED), true));
+            }
         }
     }
 
@@ -396,7 +404,8 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
 
     /// The ghost at the pointer (a window moving live is its own ghost) under one destination
     /// preview. The ghost has a translucent fill, a 2 pt outline and the members' labels.
-    pub(super) fn paint_group_drag(&mut self, ui: &Ui, drag: &GroupDrag<P>, pointer: Pos2, float_only: bool) {
+    /// Returns whether it highlighted a drop target.
+    pub(super) fn paint_group_drag(&mut self, ui: &Ui, drag: &GroupDrag<P>, pointer: Pos2, float_only: bool) -> bool {
         let ctx = ui.ctx();
         let painter = self.preview_painter(ctx);
         if drag.gesture != GroupGesture::Window {
@@ -418,16 +427,17 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             }
         }
         if float_only || (drag.gesture == GroupGesture::Window && !self.title_bar_docks()) {
-            return;
+            return false;
         }
         if let Some((action, drop)) = self.dock_group_proposal(drag, pointer) {
+            let highlighted = action.is_some();
             if let Some(action) = action {
                 self.paint_dock_preview(ctx, &painter, action, &drag.members, &drop);
                 if drag.gesture != GroupGesture::Window {
                     self.paint_float_hint(ctx, pointer);
                 }
             }
-            return;
+            return highlighted;
         }
         let proposal = self.group_proposal(drag, pointer).filter(|p| !p.noop);
         let zones = self.paint_group_zones(&painter, drag, pointer, proposal.as_ref());
@@ -441,7 +451,9 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             if drag.gesture != GroupGesture::Window {
                 self.paint_float_hint(ctx, pointer);
             }
+            return true;
         }
+        false
     }
 
     pub(in crate::docking) fn finish_drag(&mut self, ctx: &Context) {
@@ -875,6 +887,8 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             let painter = self.preview_painter(ctx);
             if let Some(rect) = feedback.preview.filter(|rect| crate::docking::targets::usable(*rect)) {
                 drop_preview(&painter, rect, self.style.accent, true);
+                // A window moving by its title bar fades over it, as over the renderer's own.
+                ctx.data_mut(|d| d.insert_temp(self.id.with(GROUP_HIGHLIGHTED), true));
             }
             if let Some(rect) = feedback.insertion.filter(|rect| crate::docking::targets::usable(*rect)) {
                 painter.rect_filled(rect, 0.0, self.style.accent);

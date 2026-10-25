@@ -2360,15 +2360,41 @@ fn a_tab_drag_onto_a_native_window_is_no_app_drag() {
 }
 
 #[test]
-fn a_native_window_fades_only_while_its_drag_can_dock() {
-    let drag = |docks| WindowDrag { window: 1, grab: vec2(10.0, 10.0), to: pos2(100.0, 100.0), start: pos2(100.0, 100.0), docks };
-    assert_eq!(drag_opacity(None, false, true), 1.0);
-    // A bar drag that only moves the window stays opaque.
-    assert_eq!(drag_opacity(Some(&drag(false)), false, false), 1.0);
-    assert_eq!(drag_opacity(Some(&drag(false)), false, true), 0.75);
-    // A drag by the window's only tab or group docks either way.
-    assert_eq!(drag_opacity(Some(&drag(true)), false, false), 0.75);
-    // With Cmd/Ctrl held the drag only moves the window.
-    assert_eq!(drag_opacity(Some(&drag(false)), true, true), 1.0);
-    assert_eq!(drag_opacity(Some(&drag(true)), true, false), 1.0);
+fn a_native_window_fades_only_while_its_bar_drag_highlights_a_drop_target() {
+    let bar_to = |d: &mut DockDriver<u32, Content>, to: Pos2| {
+        let id = window(d, 5).id;
+        let local = d.window_local(id, ORIGIN + to.to_vec2()).unwrap();
+        d.window_step(id, vec![Event::PointerMoved(local)]);
+        drag_opacity(&d.ctx, d.id)
+    };
+    let grab = |d: &mut DockDriver<u32, Content>| {
+        let id = window(d, 5).id;
+        d.window_step(id, vec![Event::PointerMoved(pos2(40.0, 9.0)), button(pos2(40.0, 9.0), true)]);
+        d.window_step(id, vec![Event::PointerMoved(pos2(60.0, 19.0))]);
+        id
+    };
+    // A bar that only moves its window highlights nothing.
+    let mut d = driver(layout(true)).with_style(|s| {
+        s.command_press_floats = true;
+        s.title_bar_docks = false;
+    });
+    grab(&mut d);
+    assert_eq!(bar_to(&mut d, pos2(760.0, 300.0)), 1.0, "a move that cannot dock");
+
+    let mut d = driver(layout(true));
+    let id = grab(&mut d);
+    // Past the main window's right side: the desktop.
+    assert_eq!(bar_to(&mut d, pos2(1000.0, 300.0)), 1.0, "over empty space");
+    // The right edge zone of frame [3, 4].
+    assert_eq!(bar_to(&mut d, pos2(760.0, 300.0)), 0.75, "over a drop target");
+    // The middle of the frame is no target for a whole window.
+    assert_eq!(bar_to(&mut d, pos2(600.0, 300.0)), 1.0, "after leaving the target");
+    assert_eq!(bar_to(&mut d, pos2(760.0, 300.0)), 0.75);
+    // With Cmd/Ctrl held the drop floats and nothing is highlighted.
+    d.modifiers = Modifiers::COMMAND;
+    assert_eq!(bar_to(&mut d, pos2(760.0, 300.0)), 1.0, "a floating drop");
+    d.modifiers = Modifiers::NONE;
+    assert_eq!(bar_to(&mut d, pos2(760.0, 300.0)), 0.75);
+    d.window_step(id, vec![button(pos2(40.0, 9.0), false)]);
+    assert_eq!(drag_opacity(&d.ctx, d.id), 1.0, "after the drop");
 }

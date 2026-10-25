@@ -37,6 +37,10 @@ pub(in crate::docking) use native::{DesktopCursor, InputHook, set_input_hook};
 #[cfg(feature = "native-windows")]
 const BLOCKED_FOCUS_WAIT: f64 = 0.2;
 
+/// Opacity of a floating window, in-window or native, while its bar, only tab or only tab row
+/// drags it over a drop target: the highlighted target under the window shows through it.
+pub(in crate::docking) const DRAG_OPACITY: f32 = 0.75;
+
 /// While input is blocked (`starts`: from this frame), a native window of the dock area `area`
 /// with the keyboard would drop the keys the modal needs, so once, after
 /// [`BLOCKED_FOCUS_WAIT`], the main window, where the modal is, takes the keyboard if one still

@@ -95,21 +95,16 @@ pub(in crate::docking) const MACOS_CLOSE: CloseLayout =
 pub(in crate::docking) const OTHER_CLOSE: CloseLayout =
     CloseLayout { glyph_top: 4.5, glyph_trailing: 11.5, glyph_size: 9.0, hit_left: 4.5, hit_right: 4.5, hit_up: 4.5, hit_down: 4.5 };
 
-/// Opacity of a native window while its bar or only tab drags it somewhere it can dock: the
-/// window stays above the main window, so the drop preview under the pointer shows only
-/// through it.
+/// Opacity of the native window that a bar drag of the area `area` moves, by the rule for every
+/// floating window ([`super::DRAG_OPACITY`]): faded while the drag highlights a drop target, as
+/// the last frame drew it ([`super::cross::HIGHLIGHTED`]), opaque over empty space, for a move
+/// that cannot dock and while Ctrl/Cmd keeps the drop floating. The window stays above the main
+/// window, so the highlighted target shows only through it.
 #[cfg(any(target_os = "macos", test))]
-const DRAG_OPACITY: f64 = 0.75;
-
-/// Opacity of the window `drag` moves: faded while the drag can dock (its only tab or group, or
-/// a bar with [`crate::docking::DockStyle::title_bar_docks`]), opaque for a plain move and while
-/// Ctrl/Cmd keeps the drop floating (`float_only`).
-#[cfg(any(target_os = "macos", test))]
-pub(in crate::docking) fn drag_opacity(drag: Option<&WindowDrag>, float_only: bool, title_bar_docks: bool) -> f64 {
-    match drag {
-        Some(drag) if !float_only && (drag.docks || title_bar_docks) => DRAG_OPACITY,
-        _ => 1.0,
-    }
+pub(in crate::docking) fn drag_opacity(ctx: &Context, area: Id) -> f64 {
+    let dragging = ctx.data(|d| d.get_temp::<WindowDrag>(area.with("window-drag"))).is_some();
+    let highlighted = ctx.data(|d| d.get_temp::<bool>(area.with(super::cross::HIGHLIGHTED))).unwrap_or(false);
+    if dragging && highlighted { f64::from(super::DRAG_OPACITY) } else { 1.0 }
 }
 
 /// Sets the opacity of the AppKit windows titled `title`, never one titled `main` (the main
@@ -645,17 +640,17 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             (place.known[0], place.known[1], place.pending) = (to.x, to.y, Some(now + MOVE_WAIT));
         }
         let moving = moving(ctx);
-        // Set every frame from the drag state, so any way a drag ends (a drop, Escape, a focus
-        // loss, the window closing) brings the window back to full opacity. AppKit finds the
-        // window by title, so a window sharing the dragged one's title stays faded with it.
+        // Set every frame from the drag state and the last frame's preview, so leaving a target
+        // or any way a drag ends (a drop, Escape, a focus loss, the window closing) brings the
+        // window back to full opacity. AppKit finds the window by title, so a window sharing
+        // the dragged one's title stays faded with it.
         #[cfg(target_os = "macos")]
         {
             let main = ctx.input(|i| i.raw.viewports.get(&ViewportId::ROOT).and_then(|v| v.title.clone()));
             let drag = ctx.data(|d| d.get_temp::<WindowDrag>(drag_key));
             let dragged = drag.as_ref().and_then(|drag| self.layout.floating.iter().find(|w| w.id == drag.window));
             let this = dragged.and_then(|w| crate::docking::dock_model::first_active(&w.root)).is_some_and(|p| self.label_of(p) == title);
-            let float_only = drag.is_some_and(|drag| self.cross.pointer.is_some_and(|p| p.window == Some(drag.window) && p.command));
-            let opacity = if this { drag_opacity(drag.as_ref(), float_only, self.style.title_bar_docks) } else { 1.0 };
+            let opacity = if this { drag_opacity(ctx, self.id) } else { 1.0 };
             set_window_opacity(&title, main.as_deref(), opacity);
         }
         // The collapsed height a minimized window reports is not the size to keep.
