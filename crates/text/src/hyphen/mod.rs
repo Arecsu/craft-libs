@@ -161,16 +161,30 @@ impl Lang {
 }
 
 /// The language of a locale code split into lowercase `words`: a language (2 or 3 letters), then
-/// optionally a region (2 letters or 3 digits) and a reform year (4 digits).
+/// optionally a script (4 letters), a region (2 letters or 3 digits) and a reform year (4 digits),
+/// in that order.
 fn locale_language<'a>(words: &[&'a str]) -> Option<&'a str> {
-    let letters = |w: &str, n: std::ops::RangeInclusive<usize>| n.contains(&w.len()) && w.bytes().all(|b| b.is_ascii_lowercase());
-    let digits = |w: &str, n: usize| w.len() == n && w.bytes().all(|b| b.is_ascii_digit());
-    match *words {
-        [lang] if letters(lang, 2..=3) => Some(lang),
-        [lang, region] if letters(lang, 2..=3) && (letters(region, 2..=2) || digits(region, 3)) => Some(lang),
-        [lang, region, year] if letters(lang, 2..=3) && (letters(region, 2..=2) || digits(region, 3)) && digits(year, 4) => Some(lang),
-        _ => None,
+    fn letters(w: &str, n: std::ops::RangeInclusive<usize>) -> bool {
+        n.contains(&w.len()) && w.bytes().all(|b| b.is_ascii_lowercase())
     }
+    fn digits(w: &str, n: usize) -> bool {
+        w.len() == n && w.bytes().all(|b| b.is_ascii_digit())
+    }
+    let (&lang, mut rest) = words.split_first()?;
+    if !letters(lang, 2..=3) {
+        return None;
+    }
+    let script = |w: &str| letters(w, 4..=4);
+    let region = |w: &str| letters(w, 2..=2) || digits(w, 3);
+    let year = |w: &str| digits(w, 4);
+    for subtag in [script as fn(&str) -> bool, region, year] {
+        if let Some((&w, tail)) = rest.split_first()
+            && subtag(w)
+        {
+            rest = tail;
+        }
+    }
+    rest.is_empty().then_some(lang)
 }
 
 /// Where a word's break points came from.

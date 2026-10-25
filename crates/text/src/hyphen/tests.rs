@@ -70,7 +70,7 @@ fn limits_are_respected() {
 
 #[test]
 fn language_names_and_codes() {
-    for name in ["English", "English: USA", "english", "$ID/English: UK", "en", "en_US", "en-GB", "EN"] {
+    for name in ["English", "English: USA", "english", "$ID/English: UK", "en", "en_US", "en-GB", "EN", "en-Latn-US"] {
         assert_eq!(Lang::for_language(name), Some(Lang::English), "{name}");
     }
     // Each language resolves by name and by code exactly when its feature is on.
@@ -88,6 +88,10 @@ fn language_names_and_codes() {
             format!("{code}_{upper}"),
             format!("{code}-419"),
             format!("{code}_{upper}_2006"),
+            format!("{code}-Latn"),
+            format!("{code}-Latn-{upper}"),
+            format!("{code}-1996"),
+            format!("{code}-Latn-1996"),
         ] {
             assert_eq!(Lang::for_language(&spelling), want, "{spelling}");
         }

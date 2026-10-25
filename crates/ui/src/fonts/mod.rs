@@ -77,6 +77,13 @@ impl From<craft_fonts_build::EmbeddedFace> for CraftFace {
     }
 }
 
+impl From<craft_fonts_build::ServedFace> for ServedFace {
+    fn from(face: craft_fonts_build::ServedFace) -> Self {
+        let craft_fonts_build::ServedFace { family, style, scripts, index, url, size, integrity, coverage } = face;
+        Self { family, style, scripts, index, url, size, integrity, coverage }
+    }
+}
+
 impl CraftFace {
     /// The egui font name, e.g. `"Noto Sans Arabic Regular"`.
     pub fn name(&self) -> String {

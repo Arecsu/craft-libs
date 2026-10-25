@@ -138,7 +138,9 @@ russian = ["hyphen", "hypher/russian"]
 sanskrit = ["hyphen", "hypher/sanskrit"]
 serbian = ["hyphen", "hypher/serbian"]
 # Slovak patterns are under the GPL, version 2 or later (hyph-sk.tex), unlike every other language
-# here, so `all-languages` leaves them out. A build that enables this ships GPL-licensed data.
+# here, so `all-languages` leaves them out. A build that enables this ships GPL-licensed data. Any
+# other dependency that enables `hypher/slovak` (hypher's defaults do) embeds them too, through
+# feature unification.
 slovak-gpl = ["hyphen", "hypher/slovak"]
 slovenian = ["hyphen", "hypher/slovenian"]
 spanish = ["hyphen", "hypher/spanish"]

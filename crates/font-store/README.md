@@ -98,7 +98,7 @@ indexes/             the last indexes fetched: sources.json, <source>.json.gz, u
 .lock                held while the store changes
 ```
 
-A Google Fonts family's folder is google/fonts' own folder name (`lato/`); another source's is `<source>/<family>` (`notofonts/noto-sans-cjk-jp/`, `user-fonts-example-org-myfonts/some-family/`).
+A Google Fonts family's folder is google/fonts' own folder name (`lato/`); another source's is `<source>/<family>` (`notofonts/noto-sans-cjk-jp/`, `user-fonts-example-org-myfonts-bfeb06e2/some-family/`).
 
 `manifest.json` lists each installed family: its name, source, folder, licence and licence file, and per file its name, path in its repository, size, sha256, the index commit it came from, and its PostScript names. An entry is one family of one source, so the same name from two sources is two entries. A manifest that can't be read is moved aside to `manifest.json.bad` and counts as empty.
 

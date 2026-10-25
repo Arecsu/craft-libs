@@ -581,11 +581,13 @@ fn is_shortcut_chord(m: Modifiers) -> bool {
 /// A caret IMEs can place a window at: at least a point wide and tall (some ignore an empty
 /// rectangle), and inside the window, so a caret scrolled off the canvas doesn't put the
 /// candidates off screen.
-fn caret_area(caret: Rect, screen: Rect) -> Rect {
+pub(super) fn caret_area(caret: Rect, screen: Rect) -> Rect {
     if !caret.is_finite() || !screen.is_positive() {
         return caret;
     }
     let size = caret.size().max(egui::vec2(1.0, 1.0)).min(screen.size());
-    let min = caret.min.clamp(screen.min, screen.max - size);
+    // `screen.max - size` can round below `screen.min` (a screen from 0.1 to 0.5), and `clamp`
+    // panics on bounds out of order.
+    let min = caret.min.clamp(screen.min, (screen.max - size).max(screen.min));
     Rect::from_min_size(min, size)
 }

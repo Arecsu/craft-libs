@@ -127,7 +127,10 @@ impl Screens {
     }
 
     /// Called on the context before the first frame, after the fonts are installed: the app's
-    /// theme, and its interface direction if it stores one on the context.
+    /// theme, and anything else it stores on the context. The harness applies the locale's
+    /// direction ([`direction::apply`](crate::direction::apply)) before this runs and again after
+    /// it, so egui's own chrome follows the locale even when the callback installs a whole new
+    /// style. The callback can't override the direction.
     pub fn setup(mut self, setup: impl Fn(&Context, &Locale) + 'static) -> Self {
         self.setup = Some(Rc::new(setup));
         self
@@ -153,8 +156,10 @@ impl Screens {
             .with_size(self.size)
             .with_context_setup(move |ctx| {
                 fonts.install(ctx);
+                crate::direction::apply(ctx, locale.direction);
                 if let Some(setup) = setup {
                     setup(ctx, &locale);
+                    crate::direction::apply(ctx, locale.direction);
                 }
             })
             .build_ui_state(

@@ -155,7 +155,7 @@ impl Embed {
     /// `web/fonts` as `fonts/`. An interface face cut by `Embed::subset_to` is served from its cut,
     /// with the start of the cut's SHA-256 in the file name (`ui/NotoSansTCUI-Regular.<hash>.ttf`)
     /// and the cut's own integrity value. A relative `dir` is under the package directory, where
-    /// Cargo runs build scripts. Files already there with the right size are left as they are;
+    /// Cargo runs build scripts. Files already there with the same bytes are left as they are;
     /// files of faces no longer selected, and earlier cuts, are not removed.
     pub fn serve(mut self, dir: impl Into<PathBuf>, url_prefix: &str) -> Self {
         self.serve = Some(Serve { dir: dir.into(), url_prefix: url_prefix.to_owned() });
@@ -555,21 +555,22 @@ fn served_path(file: &str) -> &str {
     file.strip_prefix("fonts/").unwrap_or(file)
 }
 
-/// Copy `from` unless `to` already has its size. The copy keeps `from`'s modification time and is
-/// watched, so the build copies it again once it is deleted, without running every build.
+/// Copy `from` unless `to` already holds the same bytes. The copy keeps `from`'s modification time
+/// and is watched, so the build copies it again once it is deleted, without running every build.
 fn copy_file(from: &Path, to: &Path, cargo: &mut Vec<String>) -> Result<(), Error> {
     cargo.push(format!("cargo::rerun-if-changed={}", to.display()));
     let write_error = |source| Error::Write { path: to.to_path_buf(), source };
-    let size = |path: &Path| std::fs::metadata(path).ok().map(|m| m.len());
-    if size(to).is_some() && size(to) == size(from) {
+    let read_error = |source| Error::Read { path: from.to_path_buf(), source };
+    let bytes = std::fs::read(from).map_err(read_error)?;
+    if std::fs::read(to).is_ok_and(|old| old == bytes) {
         return Ok(());
     }
     if let Some(parent) = to.parent() {
         std::fs::create_dir_all(parent).map_err(write_error)?;
     }
-    std::fs::copy(from, to).map_err(write_error)?;
+    std::fs::write(to, &bytes).map_err(write_error)?;
     // Cargo reruns a build script whose watched files are newer than its last run.
-    let modified = std::fs::metadata(from).and_then(|m| m.modified()).map_err(|source| Error::Read { path: from.to_path_buf(), source })?;
+    let modified = std::fs::metadata(from).and_then(|m| m.modified()).map_err(read_error)?;
     std::fs::File::options().write(true).open(to).and_then(|f| f.set_modified(modified)).map_err(write_error)
 }
 
