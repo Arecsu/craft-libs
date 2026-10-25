@@ -623,21 +623,27 @@ impl FontStore {
     }
 
     /// Removes some files of an installed family (one style, say), by their names in its folder.
-    /// Taking out the last one removes the family.
+    /// Taking out the last one removes the family. Names the family's manifest entry doesn't list
+    /// are left alone.
     pub fn remove_files(&self, source: &str, name: &str, files: &[String]) -> Result<(), Error> {
         let result = {
             let _lock = self.lock()?;
             let mut manifest = self.read_manifest();
             let pos = manifest.families.iter().position(|f| f.is(source, name)).ok_or_else(|| Error::NotInstalled(name.to_string()))?;
             let Some(entry) = manifest.families.get_mut(pos) else { return Err(Error::NotInstalled(name.to_string())) };
-            entry.files.retain(|f| !files.contains(&f.name));
+            // Only listed, safe names become paths, so a request can't reach outside the folder.
+            let removing: Vec<String> = entry.files.iter().map(|f| f.name.clone()).filter(|n| safe_file_name(n) && files.contains(n)).collect();
+            if removing.is_empty() {
+                return Ok(());
+            }
+            entry.files.retain(|f| !removing.contains(&f.name));
             let folder = self.dir.join(&entry.dir);
             let stage = Stage::new(&self.dir)?;
             let moving: Vec<(PathBuf, PathBuf)> = if entry.files.is_empty() {
                 manifest.families.remove(pos);
                 vec![(folder, stage.dir.join("removed"))]
             } else {
-                files.iter().map(|f| (folder.join(f), stage.dir.join(f))).collect()
+                removing.iter().map(|f| (folder.join(f), stage.dir.join(f))).collect()
             };
             let mut moved = Vec::new();
             for (from, to) in &moving {

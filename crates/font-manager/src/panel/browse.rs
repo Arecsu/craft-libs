@@ -86,7 +86,7 @@ impl FontsPanel {
                     if ui.checkbox(&mut allowed, tl!("Allow downloads")).changed() {
                         let _ = self.set_downloads_allowed(allowed);
                     }
-                    let note = tl!("From Google Fonts' GitHub repository, only when you install or preview a font.");
+                    let note = tl!("From each font's source, only when you install or preview a font.");
                     ui.add(egui::Label::new(egui::RichText::new(note).size(12.0).color(s.p.muted)).wrap());
                 }
             });

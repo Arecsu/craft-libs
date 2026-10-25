@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::craft_font_catalog::{FontEnv, Limits, Os};
 use crate::filter::{Query, Search};
-use crate::index::{Category, Family, Index, categories};
+use crate::index::{Category, Family, Index, categories, source_label};
 use crate::installed::{InstalledFamily, group};
 use crate::store::{Installer, RemoveRequest, StoreError};
 use crate::{Catalog, FaceInfo, Source};
@@ -207,6 +207,11 @@ pub struct FontsPanel {
 /// A removal goes by name alone (`source` empty).
 pub(crate) fn family_key(source: &str, family: &str) -> String {
     format!("{source}\n{}", family.to_lowercase())
+}
+
+/// The host of an https URL.
+fn url_host(url: &str) -> Option<&str> {
+    url.strip_prefix("https://")?.split(['/', '?', '#']).next().filter(|h| !h.is_empty())
 }
 
 pub(crate) fn category_name(c: Category) -> &'static str {
@@ -671,14 +676,27 @@ impl FontsPanel {
         let Some(pending) = self.asking.clone() else { return };
         let Ok(c) = &self.catalogue else { return };
         let Some(family) = c.index.families().get(pending.family()) else { return };
+        let file = match &pending {
+            Pending::InstallFile(_, path) => family.files.iter().find(|f| &f.path == path),
+            _ => family.files.first(),
+        };
         let size = match &pending {
-            Pending::InstallFile(_, path) => family.files.iter().find(|f| &f.path == path).map_or(0, |f| f.size),
+            Pending::InstallFile(..) => file.map_or(0, |f| f.size),
             _ => family.size(),
         };
-        let text = fmt(
-            "Craft Font Manager downloads {family} ({size}) from Google Fonts' GitHub repository through jsDelivr, and checks every file before using it.",
-            &[("family", &family.family), ("size", &i18n::size(size))],
-        );
+        let (source, curated) = source_label(&c.index, family);
+        // A curated source's files come through its repository's CDN; a source the user added
+        // can point anywhere, so the dialog names the server.
+        let host = file.filter(|_| !curated).and_then(|f| c.index.file_urls(family, f).first().and_then(|u| url_host(u)).map(str::to_owned));
+        let args = [("family", family.family.as_str()), ("size", &i18n::size(size)), ("source", source), ("host", host.as_deref().unwrap_or(""))];
+        let text = match &host {
+            None => fmt("Craft Font Manager downloads {family} ({size}) from {source}, and checks every file before using it.", &args),
+            Some(_) => fmt(
+                "Craft Font Manager downloads {family} ({size}) from {host}, the server of {source}, a source you added, and checks every file before using it.",
+                &args,
+            ),
+        };
+        let title = fmt("Download from {source}?", &[("source", source)]);
         let s = self.skin.clone();
         let mut allow = false;
         let mut cancel = false;
@@ -687,7 +705,7 @@ impl FontsPanel {
         let response = egui::Modal::new(egui::Id::unique("craft-font-manager.consent")).frame(frame).show(ctx, |ui| {
             ui.set_max_width(440.0);
             ui.spacing_mut().item_spacing.y = 10.0;
-            let title = egui::RichText::new(tl!("Download from Google Fonts?")).size(22.0).family(s.look.display.clone()).color(s.p.ink_strong);
+            let title = egui::RichText::new(&title).size(22.0).family(s.look.display.clone()).color(s.p.ink_strong);
             ui.add(egui::Label::new(title).wrap());
             ui.add(egui::Label::new(egui::RichText::new(text).color(s.p.ink)).wrap());
             ui.add(egui::Label::new(egui::RichText::new(tl!("Downloads stay allowed until you turn them off.")).color(s.p.muted)).wrap());

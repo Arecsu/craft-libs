@@ -1,8 +1,10 @@
 //! Drawing text in a font face itself: each face shown becomes an egui font family of its own.
 //!
 //! Adding a font makes egui rebuild its fonts, so faces are added a few per frame, and once more
-//! than [`MAX_REGISTERED`] are loaded they are all taken out again, which keeps memory to the faces
-//! on screen. Only the panel's own faces are touched: the host's fonts stay as they are.
+//! than [`MAX_REGISTERED`] are loaded the ones not drawn in the last frame are taken out again,
+//! which keeps memory to the faces on screen. Faces still on screen stay, however many there are,
+//! so a full screen doesn't load its faces again every frame. Only the panel's own faces are
+//! touched: the host's fonts stay as they are.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -33,9 +35,11 @@ pub enum Shown {
 
 #[derive(Default)]
 pub struct FaceFonts {
-    registered: HashMap<String, FontFamily>,
+    /// Each face's family and the frame it was last drawn in.
+    registered: HashMap<String, (FontFamily, u64)>,
     failed: HashSet<String>,
     budget: usize,
+    frame: u64,
 }
 
 fn key(owner: Owner, face: &FaceInfo) -> String {
@@ -50,13 +54,25 @@ fn key(owner: Owner, face: &FaceInfo) -> String {
 impl FaceFonts {
     pub fn begin_frame(&mut self, ctx: &Context) {
         self.budget = PER_FRAME;
-        if self.registered.len() > MAX_REGISTERED {
+        let stale = self.next_frame();
+        if !stale.is_empty() {
             let mut definitions = ctx.fonts(|f| f.definitions().clone());
-            definitions.font_data.retain(|name, _| !self.registered.contains_key(name));
-            definitions.families.retain(|family, _| !self.registered.values().any(|f| f == family));
+            definitions.font_data.retain(|name, _| !stale.contains_key(name));
+            definitions.families.retain(|family, _| !stale.values().any(|f| f == family));
             ctx.set_fonts(definitions);
-            self.registered.clear();
         }
+    }
+
+    /// Starts a frame, and once more than [`MAX_REGISTERED`] faces are registered takes out the
+    /// ones the last frame didn't draw, returning them.
+    fn next_frame(&mut self) -> HashMap<String, FontFamily> {
+        self.frame += 1;
+        if self.registered.len() <= MAX_REGISTERED {
+            return HashMap::new();
+        }
+        let last = self.frame - 1;
+        let stale: Vec<String> = self.registered.iter().filter(|(_, (_, used))| *used < last).map(|(k, _)| k.clone()).collect();
+        stale.into_iter().filter_map(|k| self.registered.remove(&k).map(|(family, _)| (k, family))).collect()
     }
 
     /// The family that draws `face`, once egui has loaded it.
@@ -65,7 +81,8 @@ impl FaceFonts {
         if self.failed.contains(&key) {
             return Shown::Unavailable;
         }
-        if let Some(family) = self.registered.get(&key) {
+        if let Some((family, used)) = self.registered.get_mut(&key) {
+            *used = self.frame;
             let loaded = ctx.fonts(|f| f.definitions().families.contains_key(family));
             if loaded {
                 return Shown::Ready(family.clone());
@@ -89,8 +106,37 @@ impl FaceFonts {
         let family = FontFamily::Name(key.as_str().into());
         let insert = InsertFontFamily { family: family.clone(), priority: FontPriority::Highest };
         ctx.add_font(FontInsert::new(&key, FontData::from_blob(blob, data.index).tweak(tweak), vec![insert]));
-        self.registered.insert(key, family);
+        self.registered.insert(key, (family, self.frame));
         ctx.request_repaint();
         Shown::Loading
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_faces_off_screen_are_taken_out() {
+        let mut faces = FaceFonts::default();
+        let register = |faces: &mut FaceFonts, range: std::ops::Range<usize>| {
+            for n in range {
+                faces.registered.insert(format!("face:{n}"), (FontFamily::Name(format!("face:{n}").into()), faces.frame));
+            }
+        };
+        faces.next_frame();
+        register(&mut faces, 0..MAX_REGISTERED);
+        assert!(faces.next_frame().is_empty());
+        // A screen of more faces than the limit keeps them all, frame after frame.
+        register(&mut faces, 0..MAX_REGISTERED + 10);
+        assert!(faces.next_frame().is_empty());
+        register(&mut faces, 0..MAX_REGISTERED + 10);
+        assert!(faces.next_frame().is_empty());
+        // Scrolled on: the faces the last frame didn't draw go, and only those.
+        register(&mut faces, 20..MAX_REGISTERED + 20);
+        let stale = faces.next_frame();
+        assert_eq!(stale.len(), 20);
+        assert!(stale.keys().all(|k| k[5..].parse::<usize>().unwrap() < 20));
+        assert_eq!(faces.registered.len(), MAX_REGISTERED);
     }
 }

@@ -396,13 +396,25 @@ fn a_user_index_is_never_curated_and_cant_shadow_a_built_in_source() {
     assert_eq!(source.warnings.len(), 1);
     let cjk = index.family("Noto Sans CJK Test").unwrap();
     assert!(!cjk.is_curated());
-    assert_eq!(cjk.dir(), "user-fonts-example-org-notofonts/noto-sans-cjk-test");
+    assert_eq!(cjk.dir(), "user-fonts-example-org-notofonts-6b687c53/noto-sans-cjk-test");
     assert_eq!(index.file_urls(cjk, &cjk.files[0]), [format!("https://fonts.example.org/files/{CJK_PATH}")]);
     // Merged after a built-in source of the ID it claims, it is a separate source.
     let merged = Index::merge([index_of(&noto_fixture().index).unwrap(), index]);
     assert_eq!(merged.sources().len(), 2);
     assert!(merged.family("Noto Sans CJK Test").unwrap().is_curated());
     assert!(Index::from_user_bytes(v.to_string().as_bytes(), "http://fonts.example.org/index.json").is_err());
+}
+
+#[test]
+fn user_sources_whose_ids_slug_alike_get_their_own_folders() {
+    let mut v = noto_fixture().index;
+    v["source_info"]["file_urls"] = json!(["https://fonts.example.org/files/{path}"]);
+    let dir = |url: &str| Index::from_user_bytes(v.to_string().as_bytes(), url).unwrap().family("Noto Sans CJK Test").unwrap().dir().to_string();
+    let (a, b) = (dir("https://fonts.example.org/index.json"), dir("https://fonts-example.org/index.json"));
+    assert_ne!(a, b);
+    assert!(a.split('/').all(|s| s.len() <= 64) && b.split('/').all(|s| s.len() <= 64));
+    let long = format!("https://{}.example.org/index.json", "a".repeat(60));
+    assert!(dir(&long).split('/').all(|s| s.len() <= 64));
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -659,6 +671,30 @@ mod store {
         assert!(entries(&dir.join(".staging")).is_empty());
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn removing_files_touches_only_listed_names() {
+        let server = Server::start();
+        let f = fixture();
+        server.serve_fixture(&f);
+        let index = index_of(&f.index).unwrap();
+        let dir = temp("remove-listed");
+        let store = user_store(&server, &dir);
+        store.install_family(&index, index.family("Test Sans").unwrap(), &Cancel::new(), &mut none).unwrap();
+        std::fs::write(dir.join("outside.ttf"), b"x").unwrap();
+        std::fs::write(dir.join("testsans/Unlisted.ttf"), b"x").unwrap();
+
+        store.remove_files(GOOGLE_FONTS, "Test Sans", &["../outside.ttf".into(), "Unlisted.ttf".into()]).unwrap();
+        assert!(dir.join("outside.ttf").exists());
+        assert!(dir.join("testsans/Unlisted.ttf").exists());
+        assert_eq!(store.installed_family(GOOGLE_FONTS, "Test Sans").unwrap().files.len(), 3);
+
+        store.remove_files(GOOGLE_FONTS, "Test Sans", &["../outside.ttf".into(), "TestSans-Bold.ttf".into()]).unwrap();
+        assert!(dir.join("outside.ttf").exists());
+        assert!(!dir.join("testsans/TestSans-Bold.ttf").exists());
+        assert_eq!(store.installed_family(GOOGLE_FONTS, "Test Sans").unwrap().files.len(), 2);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -950,7 +986,7 @@ mod store {
         let family = theirs[1];
         let installed = store.install_family(&index, family, &Cancel::new(), &mut none).unwrap();
         assert_eq!(installed.source, "user:fonts.example.org/notofonts");
-        assert!(dir.join("user-fonts-example-org-notofonts/noto-sans-cjk-test/LICENSE").is_file());
+        assert!(dir.join("user-fonts-example-org-notofonts-6b687c53/noto-sans-cjk-test/LICENSE").is_file());
 
         // A changed file shows as changed, from the network and from the cache.
         v["families"][1]["designer"] = json!("Someone else");

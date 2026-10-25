@@ -152,6 +152,15 @@ pub(crate) fn slug(s: &str) -> String {
     if out.is_empty() { crate::verify::sha256_hex(s.as_bytes()).chars().take(16).collect() } else { out }
 }
 
+/// A user source's folder name: its ID's slug and a hash of the whole ID, since IDs that differ
+/// only in punctuation, case or past the slug's length share a slug.
+fn user_slug(id: &str) -> String {
+    let hash: String = crate::verify::sha256_hex(id.as_bytes()).chars().take(8).collect();
+    let mut s = slug(id);
+    s.truncate(MAX_SEGMENT - hash.len() - 1);
+    format!("{}-{hash}", s.trim_end_matches('-'))
+}
+
 /// A relative path in a repository: `/`-separated, no empty, `.` or `..` segment, no `\`, and a
 /// file name the store can write.
 pub(crate) fn check_path(path: &str) -> Result<&str, IndexError> {
@@ -317,7 +326,7 @@ fn check(raw: Raw, origin: Origin<'_>) -> Result<Index, IndexError> {
     for s in &raw.scripts {
         check_str("script", &s.id)?;
     }
-    let slug = slug(&id);
+    let slug = if host.is_some() { user_slug(&id) } else { slug(&id) };
     let ctx = Ctx {
         declared: &declared,
         id: &id,
