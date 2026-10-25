@@ -85,8 +85,7 @@ layout.apply(Action::Move {
   that side or a new group above or below in a dock. A floating window takes splits as the
   docked layout does; `Placement::Group` on a floating anchor splits its group above or below.
 - A side split zone puts what moves in a new half-size split of the anchor's frame, and no
-  other frame changes size. The new split has its own divider, and the drop preview shows the
-  half the new frame takes.
+  other frame changes size. The new split has its own divider.
 - Other actions select, minimize, collapse to icons, resize splits (`ResizeSplit` in the docked
   layout, `ResizeWindowSplit` in the floating window holding a panel), columns and groups, and
   move a floating window to its own OS window (`SetNative`, and `SetMonitor` for the monitor it
@@ -169,8 +168,8 @@ workspace reset hides, closes or moves its panel, and then gives it up. A divide
 window's resize grip holds focus only while the pointer drags it, so the app's shortcuts and
 canvas arrow keys work right after; one reached with Tab or F6 keeps its focus, and arrow keys
 resize it. Hovering focuses nothing. `begin_drag` hands a drag that started in the app's own chrome to the area.
-`docking::chrome` has the floating frame, the title bar and `drop_preview` (the drop preview
-docking and `craft_ui::panes` both draw) for apps that draw their own windows.
+`docking::chrome` has the floating frame, the title bar and `drop_preview` (the drag ghost
+and region preview docking and `craft_ui::panes` both draw) for apps that draw their own windows.
 
 ## Tab strips
 
@@ -227,16 +226,44 @@ A flyout fits its content the same way, without the title bar.
   4 pt band above the title bar (`chrome::RESIZE_BAND`), so they take no moves and no clicks on
   the title bar's buttons. A resize keeps the opposite edges in place and stays within the size
   limits and the screen. A focused resize handle moves its edge 8 pt per arrow key.
-- Over a frame, the tab strip and the middle join its tabs, and the nearest side splits it. The
-  side zones are trapezoids along the four edges of the body below the tab strip, like a picture
-  frame, all four the same depth: `DockStyle::zone_depth` (40 pt), or a quarter of the body's
-  smaller side when that is less, so every frame keeps a center. A frame too narrow or short for two
-  halves of `DockStyle::min_pane` still splits when the frames beyond it can give the room, as they
-  do for a dragged divider; when they cannot, the drop joins the frame's tabs instead. The gap between two frames is no target.
-- The outer edge band (`DockStyle::edge_band`) takes a drop as a new frame across the whole
-  window side: top and bottom, and left and right with `side_edge_zones`. It takes a quarter of
-  the window and is offered only when every frame keeps its minimum. Past the band, a frame's own
-  side zones apply.
+- Over a group (a frame, a dock column's group or a floating group), the pointer's place
+  decides:
+  - The tab strip joins the group's tabs at the insertion slot under the pointer.
+  - In the body below the strip, the outer `DockStyle::side_zone_fraction` (one third) of its
+    width from the left or right edge, or of its height from the top or bottom edge, docks
+    beside the group on that side. Where two sides meet, at a corner, the side the pointer is
+    relatively nearer wins.
+  - The middle third joins the group's tabs.
+  - A group that takes no tabs, such as a protected canvas, has no middle: every point of its
+    body docks beside it on the relatively nearest side. Its strip takes nothing.
+- Beside a frame is a split of that frame. Beside a group in a dock column, the top and bottom
+  stack a new group above or below it, and the left and right make a new column on that side.
+- A frame too narrow or short for two halves of `DockStyle::min_pane` still splits when the
+  frames beyond it can give the room, as they do for a dragged divider. When they cannot, that
+  side joins the frame's tabs instead, or takes nothing when the frame takes no tabs. The gap
+  between two frames is no target.
+- Bands along borders come before the group zones. Each is centred on its border where the
+  pointer can reach both sides:
+
+  | Band | Drop | Field (default) |
+  |---|---|---|
+  | The seam between two stacked groups of a dock column | A new group between them | `seam_band` (28 pt) |
+  | Each edge of a dock column | A new column on that side | `column_edge_band` (28 pt) |
+  | The docked area's left or right edge without a dock, and an empty dock | A new dock | `new_dock_band` (28 pt) |
+  | The layout's top and bottom edges (and left and right with `side_edge_zones`) | A new frame across the whole window side, a quarter of the window | `edge_band` (28 pt, 8 pt with `side_edge_zones`; at most a quarter of the layout) |
+
+  Where a band overlaps a group's outer third, both mean the same side. Without
+  `side_edge_zones`, a band reaches only 4 pt past its line into a tab strip that takes tabs;
+  the rest of the strip joins. The outer
+  edge band is offered only when every frame keeps its minimum.
+- With `side_edge_zones` (the split-tree arrangement), a frame's zones are a picture frame
+  instead: trapezoids along the four edges of the body below the tab strip, all four the same
+  depth, `docking::SIDE_EDGE_ZONE_DEPTH` (40 pt), or a quarter of the body's smaller side when
+  that is less, so every frame keeps a center. A dock column's groups take the same depth.
+  `drop_zone` and `resolve_drop` give these zones to hosts that draw their own frames.
+- A host that resolves drops over its own groups calls `resolve_drop_by` with
+  `DockStyle::zone_rule()`, so its zones and previews match the dock area's in either profile.
+  `resolve_drop` always gives the split-tree zones.
 - A dragged divider grows the frames that touch it on one side, up to their maximums. On the
   other side the frame touching it shrinks to its minimum, then the next frame along the same
   axis, and so on: the divider stops when every frame on that side is at its minimum. Frames
@@ -261,13 +288,21 @@ A flyout fits its content the same way, without the title bar.
   way. Towards the minimums, groups give way in proportion to their room. A group takes the
   largest default, compact and fill height of its panels. All three are body heights, without
   the tab strip, like `PanelLimits`.
-- Drop previews show the destination: an outline for tabs, a line for a new group, column or dock,
-  a filled half for a split. With `side_edge_zones`, a drag over a group instead outlines each of
-  its zones that a drop would change something in (the side trapezoids, the center rectangle and
-  the tab strip; `zone_shape` gives the outlines) and fills the zone under the pointer. Sides the
-  group does not take, by its permissions or because a split leaves no room, are not drawn; nor is
-  the center of the group a tab comes from. Escape or losing window focus cancels
-  a drag.
+- Drop previews have two shapes, the same for tab and group drags:
+  - A drop beside something shows a `DockStyle::drop_line_width` (4 pt) accent line along the
+    whole edge it docks to: a group's edge for a split or a new group above or below it, the
+    column's width for a seam, the dock's height for a new column or dock, and the layout's
+    whole edge for the outer edge band. The line's length shows what the drop docks beside.
+  - A drop that joins a group shows a 2 pt accent outline of the whole group, with a light fill,
+    and on its strip the 2 pt insertion marker.
+
+  A group drag also shows its ghost at the pointer. With `side_edge_zones`, a drag over a group
+  instead outlines each of its zones that a drop would change something in (the side
+  trapezoids, the center rectangle and the tab strip; `zone_shape` gives the outlines) and
+  fills the zone under the pointer. Sides the group does not take, by its permissions or
+  because a split leaves no room, are not drawn; nor is the center of the group a tab comes
+  from. A drop there that the zones do not show, such as the outer edge band, fills the region
+  it takes. Escape or losing window focus cancels a drag.
 - A drag in progress (a tab, group, column, window bar, native window bar or divider, in any of
   the app's windows) also ends when the layout passed to the area is not the one it drew last
   frame, with or without its returned actions applied: the app switched workspaces, ran Reset

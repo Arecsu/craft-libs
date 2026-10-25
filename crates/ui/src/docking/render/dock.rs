@@ -8,16 +8,43 @@ use std::{fmt::Debug, hash::Hash};
 
 use egui::{Context, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder, pos2, vec2};
 
-use super::{GroupKind, Renderer, RowItem, row_drag, row_range};
+use super::{GroupKind, Renderer, RowItem, row_drag, row_range, stripless};
 use crate::docking::{
-    Action, Column, DockEvent, DockHeights, DockStyle, Group, GroupDrag, GroupGesture, Node, Placement, Side, Target,
+    Action, Column, DockEvent, DockHeights, DockStyle, Group, GroupDrag, GroupGesture, Node, Placement, Side, Target, Zone,
     dock_model::Unit,
-    targets::{DockDrop, DockTarget, column_edge, horizontal_line, resolve_dock, usable, vertical_line},
+    targets::{
+        DockDrop, DockTarget, SIDE_EDGE_ZONE_DEPTH, STRIP_REACH, body_zone, column_edge, drop_zone, horizontal_line, resolve_dock, usable,
+        vertical_line,
+    },
 };
 use crate::layout::{ResizeHandle, ResizeHandleStyle, SplitAxis};
 
 /// Width of the »/« button at the outer end of a column bar.
 const COLLAPSE_WIDTH: f32 = 18.0;
+
+/// [D] An open group of a dock column: its visible body, and the target and line of its left,
+/// right, top and bottom zones (see [`DockStyle::side_zone_fraction`]). The top and bottom
+/// stack a group above or below it; the left and right make a column on that side.
+#[derive(Clone, Debug)]
+pub(in crate::docking) struct DockGroup<P> {
+    body: Rect,
+    /// The group takes tabs, so its body has a middle that joins it.
+    center: bool,
+    sides: [Option<(DockTarget<P>, Rect)>; 4],
+}
+
+impl<P> DockGroup<P> {
+    fn side(&self, zone: Zone) -> Option<&(DockTarget<P>, Rect)> {
+        let index = match zone {
+            Zone::Left => 0,
+            Zone::Right => 1,
+            Zone::Top => 2,
+            Zone::Bottom => 3,
+            Zone::Center => return None,
+        };
+        self.sides.get(index)?.as_ref()
+    }
+}
 
 /// The physical window edge a dock sits on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -230,8 +257,9 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             Edge::Left => (rect.left(), 1.0),
             Edge::Right => (rect.right(), -1.0),
         };
+        let (band_width, line_width) = (self.style.column_edge_band, self.style.drop_line_width);
         if columns.is_empty() {
-            let (band, line) = column_edge(outer, inward, rect.y_range());
+            let (band, line) = column_edge(outer, rect.y_range(), band_width, line_width);
             let band = band.union(Rect::from_x_y_ranges(
                 outer.min(outer + inward * self.style.new_dock_band)..=outer.max(outer + inward * self.style.new_dock_band),
                 rect.y_range(),
@@ -257,13 +285,24 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             let width = fitted.min((rect.width() - (x - outer).abs()).max(0.0));
             let inner = x + inward * width;
             let column_rect = Rect::from_x_y_ranges(x.min(inner)..=x.max(inner), rect.y_range());
+            let groups = self.dock_groups.len();
             self.column(ui, column, first, column_rect, edge);
-            if index == 0 {
-                let (band, line) = column_edge(x, inward, rect.y_range());
-                self.dock_targets.push(DockDrop { target: DockTarget::ColumnEdge { anchor: first.clone(), after: false }, band, line });
+            let (outer_band, outer_line) = column_edge(x, rect.y_range(), band_width, line_width);
+            let (inner_band, inner_line) = column_edge(inner, rect.y_range(), band_width, line_width);
+            let before = (DockTarget::ColumnEdge { anchor: first.clone(), after: false }, outer_line);
+            let after = (DockTarget::ColumnEdge { anchor: first.clone(), after: true }, inner_line);
+            let (left, right) = match edge {
+                Edge::Left => (before.clone(), after.clone()),
+                Edge::Right => (after.clone(), before.clone()),
+            };
+            for group in self.dock_groups.iter_mut().skip(groups) {
+                group.sides[0] = Some(left.clone());
+                group.sides[1] = Some(right.clone());
             }
-            let (band, line) = column_edge(inner, -inward, rect.y_range());
-            self.dock_targets.push(DockDrop { target: DockTarget::ColumnEdge { anchor: first.clone(), after: true }, band, line });
+            if index == 0 {
+                self.dock_targets.push(DockDrop { target: before.0, band: outer_band, line: before.1 });
+            }
+            self.dock_targets.push(DockDrop { target: after.0, band: inner_band, line: after.1 });
             drawn.push((index, column, first, width, inner));
             x = inner;
         }
@@ -408,10 +447,13 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         }
         let xs = view.x_range();
         let half = self.style.seam_band * 0.5;
+        let width = self.style.drop_line_width;
+        // A line on an edge scrolled out of the view shows at the view's edge.
+        let line = |y: f32| horizontal_line(y.clamp(view.top() + width * 0.5, view.bottom() - width * 0.5), xs, width);
         let push = |targets: &mut Vec<DockDrop<P>>, target: DockTarget<P>, band: Rect, line: Rect| {
             let band = band.intersect(view);
             if usable(band) {
-                targets.push(DockDrop { target, band, line: line.intersect(view.expand(2.0)) });
+                targets.push(DockDrop { target, band, line });
             }
         };
         let mut previous: Option<&P> = None;
@@ -419,20 +461,20 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             let Some(anchor) = group.panels.first() else { continue };
             if let Some(above) = previous {
                 let band = Rect::from_x_y_ranges(xs, (rect.top() - half)..=(rect.top() + half));
-                push(&mut self.dock_targets, DockTarget::Seam { anchor: above.clone() }, band, horizontal_line(rect.top(), xs));
+                push(&mut self.dock_targets, DockTarget::Seam { anchor: above.clone() }, band, line(rect.top()));
             }
-            if !group.minimized {
-                let body = Rect::from_min_max(pos2(rect.left(), (rect.top() + self.style.tab_height).min(rect.bottom())), rect.max);
-                let quarter = body.height() * 0.25;
-                let upper = Rect::from_x_y_ranges(xs, body.top()..=(body.top() + quarter));
-                let lower = Rect::from_x_y_ranges(xs, (body.bottom() - quarter)..=body.bottom());
-                push(&mut self.dock_targets, DockTarget::GroupBand { anchor: anchor.clone(), below: false }, upper, horizontal_line(rect.top(), xs));
-                push(
-                    &mut self.dock_targets,
-                    DockTarget::GroupBand { anchor: anchor.clone(), below: true },
-                    lower,
-                    horizontal_line(rect.bottom(), xs),
-                );
+            let header = if stripless(&group.panels, &*self.content) { 0.0 } else { self.style.tab_height };
+            let body = Rect::from_min_max(pos2(rect.left(), (rect.top() + header).min(rect.bottom())), rect.max).intersect(view);
+            if !group.minimized && usable(body) {
+                let center = group.panels.get(group.active).is_some_and(|p| self.permissions(p).accepts_tabs);
+                let (above, below) =
+                    (DockTarget::GroupBand { anchor: anchor.clone(), below: false }, DockTarget::GroupBand { anchor: anchor.clone(), below: true });
+                // The left and right sides are the column's edges, set once the column is drawn.
+                self.dock_groups.push(DockGroup {
+                    body,
+                    center,
+                    sides: [None, None, Some((above, line(rect.top()))), Some((below, line(rect.bottom())))],
+                });
             }
             previous = Some(anchor);
         }
@@ -441,7 +483,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             && top < view.bottom()
         {
             let band = Rect::from_x_y_ranges(xs, top..=view.bottom());
-            push(&mut self.dock_targets, DockTarget::GroupBand { anchor: last.clone(), below: true }, band, horizontal_line(top, xs));
+            push(&mut self.dock_targets, DockTarget::GroupBand { anchor: last.clone(), below: true }, band, line(top));
         }
         // Height dividers between an open group and the next open one, after the groups so
         // their hit areas win at the boundary. The heights of the groups a drag changes are
@@ -583,10 +625,46 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
                 Edge::Right => (self.workspace.right(), -self.style.new_dock_band),
             };
             let band = Rect::from_x_y_ranges(x.min(x + inward)..=x.max(x + inward), ys);
-            let line = vertical_line(x + inward.signum() * 2.0, ys);
+            let width = self.style.drop_line_width;
+            let line = vertical_line(x + inward.signum() * width * 0.5, ys, width);
             candidates.push(DockDrop { target: DockTarget::NewDock { side }, band, line });
         }
         candidates
+    }
+
+    /// Whether `pointer` is on the tab strip of the frontmost group under it, and that group
+    /// takes tabs: the strip joins the group, and border bands reach into it only
+    /// [`STRIP_REACH`] from their lines. Not with [`DockStyle::side_edge_zones`].
+    pub(super) fn in_tab_strip(&self, pointer: Pos2) -> bool {
+        !self.style.side_edge_zones
+            && self.targets.iter().rev().find(|t| usable(t.rect) && t.rect.contains(pointer)).is_some_and(|t| {
+                t.accepts_tabs && t.tab_strip.map(|strip| strip.intersect(t.rect)).is_some_and(|strip| usable(strip) && strip.contains(pointer))
+            })
+    }
+
+    /// The dock target at `pointer`: a band at a border, else a side zone of a dock group's
+    /// body ([`SIDE_EDGE_ZONE_DEPTH`] deep with [`DockStyle::side_edge_zones`]). The middle of a
+    /// group that takes tabs is none: the group's own target joins it.
+    fn dock_drop(&self, pointer: Pos2) -> Option<DockDrop<P>> {
+        let mut candidates = self.dock_candidates();
+        let strip = self.in_tab_strip(pointer);
+        if strip {
+            candidates.retain(|t| t.line.distance_to_pos(pointer) <= STRIP_REACH);
+        }
+        if let Some(drop) = resolve_dock(pointer, &candidates) {
+            return Some(drop.clone());
+        }
+        if strip {
+            return None;
+        }
+        let group = self.dock_groups.iter().find(|g| g.body.contains(pointer))?;
+        let zone = if self.style.side_edge_zones {
+            drop_zone(group.body, 0.0, SIDE_EDGE_ZONE_DEPTH, pointer)?
+        } else {
+            body_zone(group.body, 0.0, self.style.side_zone_fraction, group.center, pointer)?
+        };
+        let (target, line) = group.side(zone)?.clone();
+        Some(DockDrop { target, band: group.body, line })
     }
 
     /// The dock target a whole group or column drag would take at `pointer`, with the action
@@ -596,8 +674,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         if self.dock_covered(pointer, moving) {
             return None;
         }
-        let candidates = self.dock_candidates();
-        let drop = resolve_dock(pointer, &candidates)?;
+        let drop = self.dock_drop(pointer)?;
         let action = group_action(drag, drop.target.to());
         self.checked(action).map(|action| (action, drop.line))
     }
@@ -609,8 +686,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         if self.dock_covered(pointer, None) {
             return None;
         }
-        let candidates = self.dock_candidates();
-        let drop = resolve_dock(pointer, &candidates)?;
+        let drop = self.dock_drop(pointer)?;
         let action = match drop.target.to() {
             // A target named by the dragged panel is its own group or column: another panel
             // there names the same one. With none, the drop leaves the panel where it is.
@@ -638,8 +714,8 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         Some((candidate != *self.layout).then_some(action))
     }
 
-    /// The insertion line of a dock target.
-    pub(super) fn paint_dock_line(&self, ctx: &Context, line: Rect) {
+    /// The line a drop beside a group, column, dock or the layout's edge previews with.
+    pub(super) fn paint_drop_line(&self, ctx: &Context, line: Rect) {
         if usable(line) {
             let painter = self.preview_painter(ctx);
             self.iconic.outline(&painter, line, self.style);

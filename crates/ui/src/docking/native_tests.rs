@@ -895,9 +895,9 @@ fn window_move(out: &super::DockOutput<u32>) -> Option<&Target<u32>> {
 
 #[test]
 fn a_native_windows_bar_docks_it_at_frame_edges_and_dock_lines_but_not_a_body_center() {
-    // The right edge zone of frame [3, 4], 25 pt in, clear of the new-dock band along the window's edge.
+    // The right edge zone of frame [3, 4], 40 pt in, clear of the new-dock band along the window's edge.
     let mut d = driver(layout(true));
-    let out = drag_bar_to(&mut d, 5, pos2(775.0, 300.0));
+    let out = drag_bar_to(&mut d, 5, pos2(760.0, 300.0));
     assert!(matches!(window_move(&out), Some(Target::At { anchor: 3 | 4, placement: Placement::Split(super::Zone::Right) })), "{:?}", out.actions);
     assert!(d.layout.floating.is_empty());
     assert!(in_root(&d, 5) && in_root(&d, 6));
@@ -1459,10 +1459,10 @@ fn the_bars_close_button_wins_over_the_resize_bands() {
     assert_eq!(resize(pos2(237.0, 100.0)), Some(D::East), "the right edge");
     assert_eq!(resize(pos2(120.0, 1.0)), Some(D::North), "the top edge above the bar");
     assert_eq!(resize(pos2(2.0, 298.0)), Some(D::SouthWest), "the bottom-left corner");
-    // Inside a corner's L, the bar moves the window.
+    // Inside a corner's L, the bar moves the window, here to the middle of frame [1, 2].
     let rect = |x0: f32, y0: f32, x1: f32, y1: f32| Rect::from_min_max(pos2(x0, y0), pos2(x1, y1));
-    let (moved, resize, _) = press_and_drag(pos2(10.0, 10.0), vec2(20.0, 20.0));
-    assert_eq!((moved, resize), (rect(420.0, 150.0, 660.0, 450.0), None));
+    let (moved, resize, _) = press_and_drag(pos2(10.0, 10.0), vec2(-110.0, 150.0));
+    assert_eq!((moved, resize), (rect(290.0, 280.0, 530.0, 580.0), None));
 }
 
 #[test]

@@ -168,10 +168,14 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
 
     /// The outer edge band under the pointer (P8): top and bottom, and left and right with
     /// [`crate::docking::DockStyle::side_edge_zones`]. Returns a docked anchor that is not
-    /// moving, the zone and the preview of the new frame.
+    /// moving, the zone and the preview: a line along the layout's whole edge, or with side edge
+    /// zones the quarter the new frame takes. Without them, on a tab strip that takes tabs, the band reaches
+    /// only [`crate::docking::targets::STRIP_REACH`] from the line.
     pub(super) fn edge_proposal(&self, members: &[P], pointer: Pos2) -> Option<(P, Zone, Rect)> {
         let area = self.frame.edge.filter(|area| area.contains(pointer))?;
-        let band = self.style.edge_band.min(area.width() / 4.0).min(area.height() / 4.0);
+        let band = if self.style.side_edge_zones { crate::docking::targets::SIDE_EDGE_BAND } else { self.style.edge_band };
+        let band = band.min(area.width() / 4.0).min(area.height() / 4.0);
+        let line = |zone| crate::docking::targets::edge_line(area, zone, self.style.drop_line_width);
         let mut edges = vec![(pointer.y - area.top(), Zone::Top), (area.bottom() - pointer.y, Zone::Bottom)];
         if self.style.side_edge_zones {
             edges.extend([(pointer.x - area.left(), Zone::Left), (area.right() - pointer.x, Zone::Right)]);
@@ -180,8 +184,15 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         if distance > band {
             return None;
         }
+        let reach = |line: Rect| line.distance_to_pos(pointer) <= crate::docking::targets::STRIP_REACH;
+        if !self.style.side_edge_zones && self.in_tab_strip(pointer) && !line(zone).is_some_and(reach) {
+            return None;
+        }
         let anchor =
             self.layout.panels().into_iter().find(|p| !members.contains(p) && !matches!(self.place(p), Some(Place::Floating { .. }) | None))?.clone();
+        if !self.style.side_edge_zones {
+            return Some((anchor, zone, line(zone)?));
+        }
         let size = area.size() * 0.25;
         let preview = match zone {
             Zone::Left => Rect::from_min_size(area.min, vec2(size.x, area.height())),

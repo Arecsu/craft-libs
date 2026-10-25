@@ -53,23 +53,38 @@ pub struct DockStyle {
     pub blocked_dim: Color32,
     /// Height of a floating window's title bar.
     pub title_height: f32,
-    /// Width of the band along the layout's outer edge that splits at the root.
+    /// Width of the band along the layout's outer edge that splits at the root (28 pt). It is
+    /// at most a quarter of the layout's width and height. Not used with
+    /// [`Self::side_edge_zones`], whose band is 8 pt.
     pub edge_band: f32,
-    /// The outer edge band also runs along the left and right edges, where a drop adds a
-    /// full-height column. Off: only the top and bottom edges add a full-width row.
+    /// The split-tree profile. The outer edge band also runs along the left and right edges,
+    /// where a drop adds a full-height column. A group's side zones are trapezoids
+    /// [`crate::docking::SIDE_EDGE_ZONE_DEPTH`] deep (see [`crate::docking::drop_zone`]), a drag
+    /// outlines them, and a split previews the half of the group it takes. Off: only the top and
+    /// bottom edges add a full-width row, a group's zones are [`Self::side_zone_fraction`] of its
+    /// body, and every preview is a line or a tab outline.
     pub side_edge_zones: bool,
-    /// How far a group's side drop zones reach into its body, below the tab strip. All four
-    /// zones share one depth: this, or a quarter of the body's smaller side when that is less,
-    /// so the body keeps a center.
-    pub zone_depth: f32,
+    /// The share of a group's body, below the tab strip, that means "beside" on each side: of
+    /// its width from the left and right edges, of its height from the top and bottom edges
+    /// (one third, at most one half). The middle joins the group as a tab. Not used with
+    /// [`Self::side_edge_zones`].
+    pub side_zone_fraction: f32,
+    /// Width of the line a drop beside a group, column, dock or the layout's edge previews with
+    /// (4 pt, more than zero).
+    pub drop_line_width: f32,
     /// [D] The docked area's left and right edges, where no dock is yet, take a drop as a new
     /// dock (see [`Self::new_dock_band`]).
     pub new_dock_zones: bool,
     /// [D] Height of the bar above each dock column. It drags the column and holds its »/« button.
     pub column_bar_height: f32,
-    /// [D] Height of the band around the seam between two stacked groups in a dock column.
+    /// [D] Height of the band centred on the seam between two stacked groups in a dock column
+    /// (28 pt).
     pub seam_band: f32,
-    /// [D] Width of the band along the docked area's left and right edges that makes a new dock.
+    /// [D] Width of the band centred on each edge of a dock column, where a drop makes a new
+    /// column (28 pt).
+    pub column_edge_band: f32,
+    /// [D] Width of the band along the docked area's left and right edges, and inside an empty
+    /// dock, that makes a new dock (28 pt).
     pub new_dock_band: f32,
     /// [D] Side of a panel icon in an iconic column; each icon row is 10 pt taller.
     pub icon_size: f32,
@@ -173,13 +188,15 @@ impl DockStyle {
             floating_stroke: visuals.window_stroke,
             blocked_dim: visuals.panel_fill.gamma_multiply(0.6),
             title_height: super::chrome::TITLE_HEIGHT,
-            edge_band: 8.0,
+            edge_band: 28.0,
             side_edge_zones: false,
-            zone_depth: 40.0,
+            side_zone_fraction: 1.0 / 3.0,
+            drop_line_width: 4.0,
             new_dock_zones: true,
             column_bar_height: 14.0,
-            seam_band: 8.0,
-            new_dock_band: 12.0,
+            seam_band: 28.0,
+            column_edge_band: 28.0,
+            new_dock_band: 28.0,
             icon_size: 20.0,
             iconic_width: 36.0,
             iconic_max_width: 240.0,
@@ -210,6 +227,17 @@ impl DockStyle {
         }
     }
 
+    /// How a group's body divides into drop zones: [`crate::docking::SIDE_EDGE_ZONE_DEPTH`] deep
+    /// with [`Self::side_edge_zones`], else [`Self::side_zone_fraction`] of it, with
+    /// [`Self::drop_line_width`] previews. Pass it to [`crate::docking::resolve_drop_by`].
+    pub fn zone_rule(&self) -> super::ZoneRule {
+        if self.side_edge_zones {
+            super::ZoneRule::Depth(super::SIDE_EDGE_ZONE_DEPTH)
+        } else {
+            super::ZoneRule::Fraction { fraction: self.side_zone_fraction, line: self.drop_line_width }
+        }
+    }
+
     pub(super) fn valid(&self) -> bool {
         [
             self.tab_height,
@@ -222,9 +250,11 @@ impl DockStyle {
             self.floating_stroke.width,
             self.title_height,
             self.edge_band,
-            self.zone_depth,
+            self.side_zone_fraction,
+            self.drop_line_width,
             self.column_bar_height,
             self.seam_band,
+            self.column_edge_band,
             self.new_dock_band,
             self.icon_size,
             self.iconic_width,
@@ -236,6 +266,8 @@ impl DockStyle {
             && self.iconic_width <= self.iconic_max_width
             && self.tab_height > 0.0
             && self.font.size > 0.0
+            && self.drop_line_width > 0.0
+            && self.side_zone_fraction <= 0.5
     }
 }
 
@@ -1164,6 +1196,7 @@ impl<'a, P: Clone + Eq + Hash + Debug + Send + Sync + 'static> DockArea<'a, P> {
             float_bounds: self.float_bounds.map_or(ui.ctx().content_rect(), |bounds| bounds.intersect(ui.ctx().content_rect())),
             targets: Vec::new(),
             dock_targets: Vec::new(),
+            dock_groups: Vec::new(),
             owned_interactions: Vec::new(),
             output: DockOutput::default(),
             frame,

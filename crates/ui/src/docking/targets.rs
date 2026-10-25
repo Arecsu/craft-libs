@@ -31,8 +31,18 @@ pub(super) fn usable(rect: Rect) -> bool {
     rect.is_finite() && rect.width() > 0.0 && rect.height() > 0.0 && rect.width() <= 1_000_000.0 && rect.height() <= 1_000_000.0
 }
 
-/// Tab header (the top `tab_height` of `rect`) is the center; otherwise the nearest side zone of
-/// the body below it wins. Every side zone reaches the same depth into the body: `depth`, or a
+/// Depth of a group's side drop zones with [`crate::docking::DockStyle::side_edge_zones`]: the
+/// `depth` that [`drop_zone`], [`zone_shape`] and [`resolve_drop`] take there.
+pub const SIDE_EDGE_ZONE_DEPTH: f32 = 40.0;
+
+/// Width of the band along the layout's outer edge with
+/// [`crate::docking::DockStyle::side_edge_zones`], in place of
+/// [`crate::docking::DockStyle::edge_band`].
+pub(super) const SIDE_EDGE_BAND: f32 = 8.0;
+
+/// The picture-frame zones of [`crate::docking::DockStyle::side_edge_zones`]. Tab header (the
+/// top `tab_height` of `rect`) is the center; otherwise the nearest side zone of the body below
+/// it wins. Every side zone reaches the same depth into the body: `depth`, or a
 /// quarter of the body's smaller side when that is less, so a body always keeps a center and a
 /// narrow body's top and bottom zones are no deeper than its left and right ones. A `depth` of
 /// zero or less leaves only the center. Outside, non-finite, empty and inverted rectangles have
@@ -57,6 +67,49 @@ pub fn drop_zone(rect: Rect, tab_height: f32, depth: f32, pointer: Pos2) -> Opti
     Some(match nearest {
         Some((distance, zone)) if distance <= 1.0 => zone,
         _ => Zone::Center,
+    })
+}
+
+/// The zones of the default profile. Tab header (the top `tab_height` of `rect`) is the center.
+/// In the body below it, the outer `fraction` of its width from the left or right edge, or of
+/// its height from the top or bottom edge, is that side's zone; where two sides' zones meet, the
+/// side the pointer is relatively nearer wins. The rest is the center. Without `center` (a group
+/// that takes no tabs) the whole body goes to the relatively nearest side. A `fraction` of zero
+/// or less leaves only the center; more than one half acts as one half. Outside, non-finite,
+/// empty and inverted rectangles have no target.
+pub fn body_zone(rect: Rect, tab_height: f32, fraction: f32, center: bool, pointer: Pos2) -> Option<Zone> {
+    if !usable(rect) || !pointer.is_finite() || !rect.contains(pointer) || !tab_height.is_finite() || tab_height < 0.0 {
+        return None;
+    }
+    let body = body(rect, tab_height);
+    if pointer.y < body.top() || !usable(body) || fraction.is_nan() || fraction <= 0.0 {
+        return Some(Zone::Center);
+    }
+    let fraction = fraction.min(0.5);
+    let (w, h) = (body.width(), body.height());
+    let sides = [
+        ((pointer.x - body.left()) / w, Zone::Left),
+        ((body.right() - pointer.x) / w, Zone::Right),
+        ((pointer.y - body.top()) / h, Zone::Top),
+        ((body.bottom() - pointer.y) / h, Zone::Bottom),
+    ];
+    let (distance, zone) = sides.into_iter().min_by(|a, b| a.0.total_cmp(&b.0))?;
+    Some(if center && distance > fraction { Zone::Center } else { zone })
+}
+
+/// The preview line of a drop beside `rect` on `zone`'s side: `width` thick along that whole
+/// edge, inside `rect`. None for the center.
+pub(super) fn edge_line(rect: Rect, zone: Zone, width: f32) -> Option<Rect> {
+    if !usable(rect) {
+        return None;
+    }
+    let (w, h) = (width.max(1.0).min(rect.width()), width.max(1.0).min(rect.height()));
+    Some(match zone {
+        Zone::Left => Rect::from_x_y_ranges(rect.left()..=(rect.left() + w), rect.y_range()),
+        Zone::Right => Rect::from_x_y_ranges((rect.right() - w)..=rect.right(), rect.y_range()),
+        Zone::Top => Rect::from_x_y_ranges(rect.x_range(), rect.top()..=(rect.top() + h)),
+        Zone::Bottom => Rect::from_x_y_ranges(rect.x_range(), (rect.bottom() - h)..=rect.bottom()),
+        Zone::Center => return None,
     })
 }
 
@@ -106,7 +159,8 @@ pub(super) fn header_height<P>(target: &DropTarget<P>) -> f32 {
     target.tab_strip.map(|strip| strip.intersect(target.rect)).filter(|strip| usable(*strip)).map_or(0.0, |strip| strip.bottom() - target.rect.top())
 }
 
-/// Preview of the region occupied after a split or group merge.
+/// The region a split or group merge occupies: the half of `rect` on `zone`'s side, or all of
+/// it. [`resolve_drop`] previews with it.
 pub fn zone_rect(rect: Rect, zone: Zone) -> Option<Rect> {
     if !usable(rect) {
         return None;
@@ -152,10 +206,29 @@ pub fn tab_insertion_marker<P: Eq>(target: &DropTarget<P>, before: Option<&P>) -
 
 /// Resolve a pointer against visible groups. The frontmost containing group occludes groups
 /// behind it even if it rejects the drop. A strip reorders by midpoint; the body of the source
-/// group is a no-op at center. The body's side zones are [`drop_zone`]'s with `zone_depth` (see
-/// [`crate::docking::DockStyle::zone_depth`]): one depth on all four sides, at most a quarter of
-/// the body's smaller side. Floating groups normally set `allow_splits` to false.
+/// group is a no-op at center. The body's side zones are [`drop_zone`]'s with `zone_depth`
+/// ([`SIDE_EDGE_ZONE_DEPTH`] in the docking area): one depth on all four sides, at most a quarter
+/// of the body's smaller side. A split previews the half of the group it takes ([`zone_rect`]).
+/// Floating groups normally set `allow_splits` to false. These are the split-tree zones; a host
+/// that resolves drops for a [`crate::docking::DockStyle`] calls [`resolve_drop_by`] with its
+/// [`crate::docking::DockStyle::zone_rule`].
 pub fn resolve_drop<P: Clone + Eq>(panel: &P, pointer: Pos2, targets: &[DropTarget<P>], zone_depth: f32) -> Option<DropProposal<P>> {
+    resolve_drop_by(panel, pointer, targets, ZoneRule::Depth(zone_depth))
+}
+
+/// How [`resolve_drop_by`] divides a group's body.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ZoneRule {
+    /// [`drop_zone`] with this depth; a split previews the half it takes.
+    Depth(f32),
+    /// [`body_zone`] with this fraction; a split previews a `line` thick line along the
+    /// group's edge on that side.
+    Fraction { fraction: f32, line: f32 },
+}
+
+/// [`resolve_drop`] with the body zones of `rule`: [`crate::docking::DockStyle::zone_rule`]
+/// gives the ones the dock area uses.
+pub fn resolve_drop_by<P: Clone + Eq>(panel: &P, pointer: Pos2, targets: &[DropTarget<P>], rule: ZoneRule) -> Option<DropProposal<P>> {
     if !pointer.is_finite() || targets.len() > super::MAX_PANELS {
         return None;
     }
@@ -193,7 +266,12 @@ pub fn resolve_drop<P: Clone + Eq>(panel: &P, pointer: Pos2, targets: &[DropTarg
             noop,
         });
     }
-    let zone = if target.allow_splits { drop_zone(target.rect, header_height(target), zone_depth, pointer)? } else { Zone::Center };
+    let header = header_height(target);
+    let zone = match rule {
+        _ if !target.allow_splits => Zone::Center,
+        ZoneRule::Depth(depth) => drop_zone(target.rect, header, depth, pointer)?,
+        ZoneRule::Fraction { fraction, .. } => body_zone(target.rect, header, fraction, target.accepts_tabs, pointer)?,
+    };
     if zone == Zone::Center && target.accepts_tabs && target.tabs.iter().any(|(p, _)| p == panel) {
         return Some(DropProposal {
             anchor: anchor.clone(),
@@ -216,7 +294,10 @@ pub fn resolve_drop<P: Clone + Eq>(panel: &P, pointer: Pos2, targets: &[DropTarg
     Some(DropProposal {
         anchor: anchor.clone(),
         placement: Placement::Split(zone),
-        preview: zone_rect(target.rect, zone)?,
+        preview: match rule {
+            ZoneRule::Fraction { line, .. } if zone != Zone::Center => edge_line(target.rect, zone, line)?,
+            _ => zone_rect(target.rect, zone)?,
+        },
         insertion: None,
         noop: false,
     })
@@ -238,7 +319,7 @@ pub(super) enum DockTarget<P> {
     ColumnEdge { anchor: P, after: bool },
     /// The seam between two stacked groups: a new group below the group of `anchor` (P4).
     Seam { anchor: P },
-    /// The top or bottom quarter of a group body, or the free room under a column's last group (P3).
+    /// The top or bottom zone of a group body, or the free room under a column's last group (P3).
     GroupBand { anchor: P, below: bool },
     /// A window edge without a dock, or an empty dock (P5, P6).
     NewDock { side: Side },
@@ -273,23 +354,21 @@ pub(super) fn resolve_dock<P: Clone>(pointer: Pos2, targets: &[DockDrop<P>]) -> 
     targets.iter().filter(|t| usable(t.band) && t.band.contains(pointer)).min_by_key(|t| t.target.rank())
 }
 
-/// Width of the insertion lines dock targets preview with.
-const LINE: f32 = 4.0;
-/// How far a column edge band reaches into the column, and past the edge out of it.
-const EDGE_IN: f32 = 6.0;
-const EDGE_OUT: f32 = 10.0;
+/// How far from its line a border band reaches into a tab strip that takes tabs: the rest of
+/// the strip joins the group.
+pub(super) const STRIP_REACH: f32 = 4.0;
 
-/// Band and line of a column edge at `x`. `inward` is +1 when the column lies right of the edge,
-/// -1 when it lies left of it. The band reaches further out of the column than into it.
-pub(super) fn column_edge(x: f32, inward: f32, ys: Rangef) -> (Rect, Rect) {
-    let (a, b) = (x + inward * EDGE_IN, x - inward * EDGE_OUT);
-    (Rect::from_x_y_ranges(a.min(b)..=a.max(b), ys), vertical_line(x, ys))
+/// Band and line of a column edge at `x`: the band `band` wide, centred on the edge, and the
+/// line `line` wide.
+pub(super) fn column_edge(x: f32, ys: Rangef, band: f32, line: f32) -> (Rect, Rect) {
+    let half = band.max(0.0) * 0.5;
+    (Rect::from_x_y_ranges((x - half)..=(x + half), ys), vertical_line(x, ys, line))
 }
 
-pub(super) fn vertical_line(x: f32, ys: Rangef) -> Rect {
-    Rect::from_x_y_ranges((x - LINE * 0.5)..=(x + LINE * 0.5), ys)
+pub(super) fn vertical_line(x: f32, ys: Rangef, width: f32) -> Rect {
+    Rect::from_x_y_ranges((x - width * 0.5)..=(x + width * 0.5), ys)
 }
 
-pub(super) fn horizontal_line(y: f32, xs: Rangef) -> Rect {
-    Rect::from_x_y_ranges(xs, (y - LINE * 0.5)..=(y + LINE * 0.5))
+pub(super) fn horizontal_line(y: f32, xs: Rangef, width: f32) -> Rect {
+    Rect::from_x_y_ranges(xs, (y - width * 0.5)..=(y + width * 0.5))
 }

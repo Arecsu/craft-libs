@@ -181,7 +181,8 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             for (below, ys, line) in [(false, upper_top..=middle, rect.top()), (true, middle..=lower_bottom, rect.bottom())] {
                 let band = Rect::from_x_y_ranges(xs, ys).intersect(view);
                 if usable(band) {
-                    let line = horizontal_line(line.clamp(view.top() + 2.0, view.bottom() - 2.0), xs);
+                    let width = self.style.drop_line_width;
+                    let line = horizontal_line(line.clamp(view.top() + width * 0.5, view.bottom() - width * 0.5), xs, width);
                     self.dock_targets.push(DockDrop { target: DockTarget::GroupBand { anchor: anchor.clone(), below }, band, line });
                 }
             }

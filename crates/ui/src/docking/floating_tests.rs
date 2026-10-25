@@ -392,6 +392,18 @@ fn outer_edge_band_splits_at_the_root() {
 }
 
 #[test]
+fn the_split_tree_outer_edge_band_is_8_pt() {
+    let mut d = Driver::new(frames(), true);
+    let tab = d.tab(3).unwrap().center();
+    let out = d.drag(tab, pos2(7.0, 300.0));
+    assert!(out.actions.contains(&Action::Move { panel: 3, anchor: 1, placement: Placement::Edge(Zone::Left) }), "{:?}", out.actions);
+    // Past it, frame [1]'s left side zone.
+    let mut d = Driver::new(frames(), true);
+    let out = d.drag(tab, pos2(10.0, 300.0));
+    assert!(out.actions.contains(&Action::Move { panel: 3, anchor: 1, placement: Placement::Split(Zone::Left) }), "{:?}", out.actions);
+}
+
+#[test]
 fn maximized_frame_fills_the_area_and_other_frames_do_not_render_or_take_input() {
     let mut layout = frames();
     layout.floating.push(Floating::single(vec![5], 0, [400.0, 300.0, 200.0, 150.0]));
