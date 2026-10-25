@@ -100,7 +100,7 @@ impl StartupPrompt {
                             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                                 // Two strokes, not a "✕" glyph: none of the bundled faces has U+2715.
                                 let (rect, close) = ui.allocate_exact_size(Vec2::splat(18.0), egui::Sense::click());
-                                close.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Close"));
+                                close.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Close"));
                                 let color = if close.hovered() { text_primary } else { text_muted };
                                 let (center, reach) = (rect.center(), 4.5);
                                 let stroke = egui::Stroke::new(1.5, color);
