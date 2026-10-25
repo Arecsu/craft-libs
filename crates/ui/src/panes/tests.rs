@@ -300,6 +300,26 @@ fn one_slot_previews_a_pane_beside_the_context_pane() {
 }
 
 #[test]
+fn one_slot_previews_the_room_a_pane_it_reveals_leaves() {
+    // Nav and Styles share the start slot, so only Styles shows. Moved to the end, it reveals
+    // Nav, which takes 500 of the host's 784 pt.
+    let mut app = App::new(&[Pane::Nav, Pane::Styles]);
+    app.policy = SidePolicy::OneSlot;
+    for pane in [Pane::Nav, Pane::Styles] {
+        app.states.insert(pane, PaneState::docked(Edge::Start, 500.0));
+    }
+    let mut h = harness(app);
+    let from = title(&h, Pane::Styles).center();
+    let to = pos2(R - 10.0, 300.0);
+    hold(&mut h, from, to);
+    let landing = Rect::from_x_y_ranges(L + 500.0..=R, 8.0..=592.0);
+    assert_eq!(previews(&h), vec![landing]);
+    send(&mut h, vec![button(to, false)]);
+    h.run_steps(2);
+    assert_eq!(panel(&h, Pane::Styles), landing);
+}
+
+#[test]
 fn escape_and_focus_loss_restore_a_floating_pane_during_a_move() {
     let mut app = App::new(&[Pane::Styles]);
     let start = [300.0, 100.0, 270.0, 400.0];

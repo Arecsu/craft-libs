@@ -205,6 +205,7 @@ struct DragOut {
     canceled: bool,
 }
 
+#[derive(Clone)]
 struct Shown<P> {
     pane: P,
     id: Id,
@@ -349,6 +350,8 @@ impl PaneHost {
                 states(pane).or_else(|| ctx.data(|data| data.get_temp::<PaneState>(id.with("state")))).unwrap_or_else(|| content.default_state(pane));
             shown.push(Shown { pane: pane.clone(), id, state });
         }
+        // Before the one-slot filter: a drop can reveal a pane this frame hides.
+        let open_panes = shown.clone();
         self.one_slot(&mut shown, content);
 
         let previous = memory.active.filter(|active| shown.iter().any(|s| s.id == *active));
@@ -379,12 +382,12 @@ impl PaneHost {
         for edge in [Edge::Start, Edge::End, Edge::Bottom] {
             for s in shown.iter().filter(|s| s.state.place == Place::Docked(edge)) {
                 let rect =
-                    self.docked(ui, &shown, s, edge, content, &style, focus_target == Some(s.id), bounds, &mut memory, &preview, &mut requests);
+                    self.docked(ui, &open_panes, s, edge, content, &style, focus_target == Some(s.id), bounds, &mut memory, &preview, &mut requests);
                 regions.push(Region { pane: s.id, rect, floating: None });
             }
         }
         for s in shown.iter().filter(|s| s.state.place == Place::Floating) {
-            let (rect, layer) = self.floating(&ctx, &shown, s, content, &style, focus_target == Some(s.id), bounds, &preview, &mut requests);
+            let (rect, layer) = self.floating(&ctx, &open_panes, s, content, &style, focus_target == Some(s.id), bounds, &preview, &mut requests);
             regions.push(Region { pane: s.id, rect, floating: Some(layer) });
         }
 
@@ -546,7 +549,10 @@ impl PaneHost {
         let side = self.side(edge);
         let extent = if side == Side::Bottom { bounds.height() } else { bounds.width() };
         let (min, max) = self.limits(content, &s.pane, extent);
-        let size = self.docked_size(content, s, edge, bounds);
+        // A side pane takes no more than the width the panes outside it leave: egui would place
+        // a wider one partly beyond the host's edge.
+        let room = if side == Side::Bottom { f32::INFINITY } else { ui.available_rect_before_wrap().width().max(0.0) };
+        let size = self.docked_size(content, s, edge, bounds).min(room);
         let panel_id = s.id.with("panel");
         let panel = match side {
             Side::Left => egui::Panel::left(panel_id),
