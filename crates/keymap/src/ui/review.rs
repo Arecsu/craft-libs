@@ -114,6 +114,14 @@ impl Draw<'_, '_> {
         }
     }
 
+    /// Draw the import review and return the chosen action.
+    ///
+    /// The set name defaults to a translated "Imported"; it is only considered valid when no set
+    /// catalog exists or `set_name` accepts it, but the raw text is stored in `state.review.name`
+    /// even when invalid. Import is offered independently of the command count. The summary counts
+    /// changed commands plus unmatched, shortcutless, unreadable, approximated and truncated report
+    /// entries. Returns `Act::Import`, `Act::Close`, or `Act::Pick` when a suggestion is chosen; the
+    /// caller applies the action.
     fn plan_view(&mut self, ui: &mut Ui, plan: &ImportPlan, mut name: String) -> Option<Act> {
         let mut act = None;
         let report = &plan.report;

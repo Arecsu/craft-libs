@@ -144,6 +144,8 @@ impl TabTest {
         }
     }
 
+    /// Render the two tabs at fixed 90×26 rects with injected events. Clears texture deltas, counts
+    /// body paints, and updates the clicked/selected fixtures before returning the responses.
     fn frame(&mut self, events: Vec<Event>) -> (Vec<Response>, FullOutput) {
         self.time += 0.05;
         let ctx = self.ctx.clone();

@@ -132,6 +132,8 @@ impl Driver {
         driver
     }
 
+    /// One 800×600 frame with inserted modifier events and optional transparent/tweaked style or
+    /// custom area. Captures shapes, clears texture deltas, and returns `DockOutput`.
     fn frame(&mut self, mut events: Vec<Event>) -> DockOutput<u32> {
         let mut output = DockOutput::default();
         events.insert(0, Event::ModifiersChanged(self.modifiers));
@@ -255,6 +257,9 @@ fn docked_two_tab_group_drags_by_its_bar_and_keeps_order_and_active_tab() {
 }
 
 #[test]
+/// In a 300 pt strip with eight tabs and a 24 pt header, the drag bar keeps at least 40 pt and ends
+/// at the header; tabs shrink and overflow before it is narrowed, and dragging it floats all eight
+/// panels as one group.
 fn drag_bar_survives_a_strip_full_of_tabs() {
     let layout = Layout { root: Some(tabs(&[1, 2, 3, 4, 5, 6, 7, 8], 0)), floating: Vec::new() };
     let content = TestContent { header: 24.0, ..Default::default() };
@@ -392,6 +397,8 @@ fn ctrl_or_cmd_held_at_release_always_floats() {
 }
 
 #[test]
+/// Escape, focus loss, pointer exit and `cancel_drag` each end a held group drag with no actions or
+/// drop; releasing changes nothing and the layout equals the original.
 fn group_drag_escape_focus_loss_pointer_exit_and_cancel_drag_leave_the_layout_unchanged() {
     for case in ["escape", "focus", "exit", "cancel"] {
         let mut d = Driver::new(frames());
@@ -547,6 +554,8 @@ fn docked_header_drag_reaches_the_host_hook_and_preserves_the_group() {
 }
 
 #[test]
+/// A lone protected panel renders neither a tab nor a drag bar, while another group still has its
+/// bar.
 fn a_lone_protected_panel_draws_no_strip_and_no_bar() {
     struct Bare;
     impl DockContent<u32> for Bare {
@@ -569,6 +578,8 @@ fn a_lone_protected_panel_draws_no_strip_and_no_bar() {
 }
 
 #[test]
+/// The drag bar's context menu contains Close Tab Group, Minimize, Float Tab Group and Move Group
+/// To; clicking Close emits `CloseGroup`, and Enter on the focused bar opens the menu.
 fn drag_bar_menu_has_the_group_items_and_opens_from_the_keyboard() {
     use egui_kittest::{Harness, kittest::Queryable};
     let mut h = Harness::builder().with_size(vec2(800.0, 600.0)).build_ui_state(
@@ -617,6 +628,9 @@ fn a_group_dragged_out_of_a_floating_stack_tears_out_alone() {
 }
 
 #[test]
+/// A docked panel floats at the title bar plus strip plus recorded content height, with a 120 pt
+/// minimum and the 320 pt docked cap; a host floating size supplies the width and caps the height,
+/// and a group uses its active panel's content height.
 fn a_short_docked_panel_floats_at_its_content_height_up_to_its_floating_size() {
     let title = crate::docking::chrome::TITLE_HEIGHT;
     let float = |body: f32, floating_size: Option<Vec2>| {
@@ -678,6 +692,8 @@ fn a_panel_that_fills_its_frame_floats_at_its_floating_size_or_320() {
 }
 
 #[test]
+/// Keyboard focus on a tab is kept across a user drag, but a layout reset that moves the tab clears
+/// it and reports no new focus; closing the panel also gives focus up.
 fn tab_focus_follows_only_the_users_input() {
     let mut d = Driver::new(docked());
     let tab = Id::unique(AREA).with(("tab", &4u32));
@@ -715,6 +731,9 @@ fn tab_focus_follows_only_the_users_input() {
 }
 
 #[test]
+/// Wheel selection is off by default. With the floating frame style, wheel up selects the previous
+/// tab and stops at the first, trackpad points accumulate into a notch, huge deltas clamp at both
+/// ends, and middle-click closes the tab.
 fn frame_tabs_follow_the_wheel_and_close_on_a_middle_click() {
     let second = |d: &Driver| match &d.layout.root {
         Some(Node::Split { second, .. }) => (**second).clone(),

@@ -57,6 +57,9 @@ impl App {
         Self { open: open.to_vec(), states: HashMap::new(), log: Vec::new(), focused: None, to_document: 0, rtl: false, policy: SidePolicy::Columns }
     }
 
+    /// Render `PaneHost` with the app's open panes, policy and RTL flag, then a central document
+    /// panel. Applies pane requests to stored state and records requests, focused pane and
+    /// document-focus transitions.
     fn frame(&mut self, ui: &mut Ui) {
         let states = self.states.clone();
         let out = PaneHost::new(Id::unique("panes")).rtl(self.rtl).policy(self.policy).show(ui, &self.open, |p| states.get(p).copied(), &mut Content);
@@ -89,6 +92,7 @@ fn harness(app: App) -> Harness<'static, App> {
     h
 }
 
+/// The stable response id for `pane` under the `panes` host scope.
 fn pane_id(pane: Pane) -> Id {
     Id::unique("panes").with(("pane", &pane))
 }
@@ -327,6 +331,8 @@ fn pane_state_round_trips_through_json() {
 }
 
 #[test]
+/// A pane body may request 400 pt inside its 250 pt side pane; the document region still begins at
+/// the pane's inner edge on both sides.
 fn a_body_wider_than_its_pane_is_clipped_and_the_document_starts_at_the_pane_edge() {
     struct Wide;
     impl PaneContent<Pane> for Wide {

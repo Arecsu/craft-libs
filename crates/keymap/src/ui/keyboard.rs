@@ -483,6 +483,13 @@ impl Draw<'_, '_> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Draw one key cap, modifier, Caps Lock or System cap at `rect`.
+    ///
+    /// `Cap::Gap` is a no-op with no hit target. A key cap is colored by its holder class, selects
+    /// the application-wide holder as visible title when present, and sets `clicks.key` on click;
+    /// it exposes the selected state and a description naming the class. Modifier caps toggle into
+    /// `clicks.toggle`, while Caps Lock and System caps are only painted. Sizing derives from `u`;
+    /// a key's hover text lists every holder label.
     fn cap(&mut self, ui: &mut Ui, rect: Rect, cap: Cap, u: f32, mods: Mods, index: &Index, clicks: &mut Clicks) {
         if matches!(cap, Cap::Gap) {
             return;

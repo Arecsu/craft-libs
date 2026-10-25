@@ -487,6 +487,8 @@ fn old_hidden_locations_accept_panel_ids_without_a_default_identity() {
     assert_eq!(location.anchor, Some(Panel::Layers));
 }
 
+/// One 800×600 `DockArea::show` frame with actual body labels. Returns `DockOutput` plus the body
+/// scope ids and records the final cursor icon in temp data; clears texture deltas.
 fn frame(ctx: &Context, layout: &Layout<u32>, events: Vec<Event>, focused: bool) -> (DockOutput<u32>, Vec<Id>) {
     let mut output = DockOutput::default();
     let mut ids = Vec::new();
@@ -525,6 +527,8 @@ fn renderer_keeps_content_identity_when_panel_moves_into_a_float() {
 }
 
 #[test]
+/// Escape and window focus loss each discard an in-progress drag; a subsequent release emits no
+/// actions.
 fn cancelling_or_losing_focus_during_a_drag_does_not_move_panels() {
     let ctx = Context::default();
     let layout = sample();
@@ -565,6 +569,8 @@ fn pointer_button(pos: egui::Pos2, pressed: bool) -> Event {
 }
 
 #[test]
+/// Real pointer input drags a floating panel's tab into the main tab strip, emits a `Move`, removes
+/// it from the float, preserves the panel count, and activates it in the target group.
 fn actual_pointer_drag_docks_a_floating_panel_into_the_main_tab_strip() {
     let ctx = Context::default();
     let mut layout = sample();
@@ -610,6 +616,9 @@ fn tab_dragged_out_of_the_window_floats_where_it_left() {
 }
 
 #[test]
+/// At wide, narrow and wide-again sizes, every rendered body rect stays horizontally inside the
+/// viewport and, at the wide sizes, panel min/max limits bound its width, without mutating the
+/// layout's stored preferred widths.
 fn panel_size_limits_clamp_geometry_without_overwriting_preferred_widths() {
     let layout = Layout {
         root: Some(Node::Split {
@@ -668,6 +677,8 @@ fn panel_size_limits_clamp_geometry_without_overwriting_preferred_widths() {
 }
 
 #[test]
+/// A focused bottom-right floating resize grip moves width and height with Right/Down arrows and
+/// then loses focus to Tab normally.
 fn focused_floating_resize_grip_accepts_both_arrow_axes_and_releases_tab() {
     let ctx = Context::default();
     let mut layout = sample();
@@ -687,6 +698,8 @@ fn focused_floating_resize_grip_accepts_both_arrow_axes_and_releases_tab() {
 }
 
 #[test]
+/// A stack divider dragged by pointer grows the open body above and shrinks the adjacent open body
+/// while closed entries and unrelated bodies keep their heights; keyboard arrows continue resizing.
 fn stack_dividers_resize_adjacent_open_bodies_by_pointer_and_keyboard() {
     let ctx = Context::default();
     let mut layout = Layout {
@@ -738,6 +751,8 @@ fn stack_dividers_resize_adjacent_open_bodies_by_pointer_and_keyboard() {
 }
 
 #[test]
+/// A horizontal split's inner edge inside a scrollable dock remains hit-testable and draggable next
+/// to a scrollbar.
 fn split_inner_edge_remains_draggable_beside_a_scrollbar() {
     let ctx = Context::default();
     let mut layout = Layout {
@@ -820,6 +835,7 @@ fn restoring_a_panel_beside_a_nested_subtree_preserves_the_complete_workspace() 
 }
 
 #[test]
+/// A layout with only floating windows leaves the caller's available document rect unchanged.
 fn floating_only_surface_does_not_allocate_the_callers_document_region() {
     let ctx = Context::default();
     let layout = Layout { root: None, floating: vec![Floating::single(vec![1u32], 0, [30.0, 40.0, 200.0, 200.0])] };
@@ -843,6 +859,8 @@ fn floating_only_surface_does_not_allocate_the_callers_document_region() {
 }
 
 #[test]
+/// Dragging the floating group grip emits `MoveFloating` and changes the window rect while the
+/// group's panels and active panel stay the same; dragging a tab detaches only that panel.
 fn floating_group_grip_moves_every_member_while_tab_drag_detaches_one() {
     let ctx = Context::default();
     let mut layout = sample();
@@ -983,6 +1001,8 @@ struct CustomContent {
 }
 
 #[test]
+/// `cancel_drag` discards a floating group's move before the caller replaces the layout, so later
+/// pointer movement and release emit nothing and the replacement stays intact.
 fn host_cancel_discards_group_drag_before_workspace_replacement() {
     let ctx = Context::default();
     let mut layout = sample();
@@ -1025,6 +1045,8 @@ impl DockContent<u32> for CustomContent {
     fn group_header_width(&self, _: &[u32], _: &u32, _: bool, _: f32) -> f32 {
         40.0
     }
+    /// Custom header: records the call, asserts it receives at most the declared 40 pt width, and
+    /// draws its own glyph.
     fn group_header(&mut self, ui: &mut egui::Ui, _: &[u32], _: &u32, _: bool) {
         self.headers += 1;
         assert!(ui.max_rect().width() <= 40.0);
@@ -1089,6 +1111,7 @@ fn custom_chrome_shaped_labels_and_programmatic_raise_are_available() {
 }
 
 #[test]
+/// An overlay appearing mid-drag blocks the release's float fallback; later frames emit no action.
 fn overlay_appearing_mid_drag_blocks_release_and_float_fallback() {
     let ctx = Context::default();
     let layout = sample();
@@ -1125,6 +1148,8 @@ fn group_move_escape_restores_original_geometry() {
 }
 
 #[test]
+/// Custom headers and labels render at 0.75×, 1×, 1.5× and 2×: headers and bodies are produced and
+/// panel 6's label is rendered with its logical text.
 fn custom_headers_and_labels_render_at_small_and_large_scales() {
     for scale in [0.75, 1.0, 1.5, 2.0] {
         let ctx = Context::default();
@@ -1153,6 +1178,8 @@ fn custom_headers_and_labels_render_at_small_and_large_scales() {
 }
 
 #[test]
+/// A protected member blocks whole-group gestures and host drops: drag/drop state stays empty and
+/// no `MoveFloating` action is emitted.
 fn protected_group_member_blocks_whole_group_gesture_and_host_drop() {
     let ctx = Context::default();
     let layout = sample();
@@ -1228,6 +1255,8 @@ fn protected_group_member_blocks_floating_group_resize() {
 }
 
 #[test]
+/// Chrome focus recognizes a rendered tab but rejects a focused body text field, an invalid layout,
+/// an empty layout and an unrendered id.
 fn chrome_focus_classifies_rendered_tab_but_excludes_body_text_field_and_invalid_layout() {
     let ctx = Context::default();
     let layout = sample();
@@ -1267,6 +1296,8 @@ fn chrome_focus_classifies_rendered_tab_but_excludes_body_text_field_and_invalid
 }
 
 #[test]
+/// Chrome focus recognizes rendered tabs, collapse buttons, stack resizers, split dividers and
+/// floating resizers.
 fn chrome_focus_classifies_rendered_accordion_and_split_and_floating_resizers() {
     let ctx = Context::default();
     let area = Id::unique("focus-chrome-controls");
@@ -1304,6 +1335,9 @@ fn chrome_focus_classifies_rendered_accordion_and_split_and_floating_resizers() 
 }
 
 #[test]
+/// `cancel_drag` ends an owned split/stack/floating resize until a new press: held movement stops
+/// producing actions and the layout stays at the cancellation snapshot, then a fresh press resizes
+/// again.
 fn workspace_cancel_stops_owned_resize_controls_until_new_press() {
     let area = Id::unique("test-area");
     let fixtures = [
@@ -1350,6 +1384,8 @@ fn workspace_cancel_stops_owned_resize_controls_until_new_press() {
 }
 
 #[test]
+/// Cancelling one area's drag leaves another area's split divider or a body-owned drag in control,
+/// and that gesture continues producing its effects.
 fn workspace_cancel_preserves_other_area_and_body_drag_ownership() {
     for body_drag in [false, true] {
         let ctx = Context::default();
@@ -1415,6 +1451,8 @@ fn workspace_cancel_preserves_other_area_and_body_drag_ownership() {
 }
 
 #[test]
+/// Custom action labels paint their visual substitution while the popup buttons keep their own
+/// logical accessibility names; the visual text is not exposed as an accessibility label.
 fn popup_action_labels_use_custom_visual_text_and_logical_accessibility() {
     use egui_kittest::{Harness, kittest::Queryable};
     fn paints(shape: &egui::Shape, text: &str) -> bool {
@@ -1465,6 +1503,9 @@ fn popup_action_labels_use_custom_visual_text_and_logical_accessibility() {
 }
 
 #[test]
+/// At the minimum tab width, only the tabs that fit beside the drag bar and overflow control are
+/// shown, the active last tab replaces the last fitting tab, and the overflow menu lists exactly the
+/// hidden panels.
 fn a_strip_too_narrow_for_its_tabs_at_their_minimum_width_lists_the_others_in_the_overflow_menu() {
     use egui::accesskit::Role;
     use egui_kittest::{Harness, kittest::Queryable};
@@ -1499,6 +1540,8 @@ fn a_strip_too_narrow_for_its_tabs_at_their_minimum_width_lists_the_others_in_th
 }
 
 #[test]
+/// Long tab labels are truncated with an ellipsis inside their tab and expose the full label in a
+/// tooltip on hover.
 fn tab_labels_that_do_not_fit_are_truncated_inside_their_tab_and_named_in_a_tooltip() {
     let ctx = Context::default();
     ctx.all_styles_mut(|style| style.interaction.tooltip_delay = 0.0);
@@ -1551,6 +1594,8 @@ fn tab_labels_that_do_not_fit_are_truncated_inside_their_tab_and_named_in_a_tool
 // Ported from storytold/craft-libs#110 by @Zenodeon.
 
 #[test]
+/// A floating resize keeps drag ownership when another host control rewrites the owned-interaction
+/// list; `cancel_drag` then ends it and further movement is ignored.
 fn resize_cancellation_retains_ownership_across_other_host_rendering() {
     let ctx = Context::default();
     let area = Id::unique("test-area");
@@ -1572,6 +1617,8 @@ fn resize_cancellation_retains_ownership_across_other_host_rendering() {
 }
 
 #[test]
+/// A collapsed 26 pt floating window still resizes its width with the Right arrow under a height
+/// cap, growing to the minimum height instead of ignoring the gesture.
 fn collapsed_floating_height_cap_does_not_disable_keyboard_width_resizing() {
     let ctx = Context::default();
     let mut layout = Layout { root: None, floating: vec![Floating::single(vec![1u32], 0, [80.0, 70.0, 300.0, 26.0])] };
@@ -1632,6 +1679,11 @@ fn returning_to_a_singleton_or_floating_source_body_is_an_explicit_noop() {
 }
 
 #[test]
+/// Dragging each floating resize grip with the pointer past a viewport edge leaves every asserted
+/// edge unchanged when the pointer moves partway back while still outside, and returning to the
+/// start point restores the original geometry. `resize-right` and `resize` assert the clamped
+/// right edge and fixed left edge; `resize-left` and `resize-bottom-left` assert only their fixed
+/// right edge. `resize-bottom` asserts the clamped bottom edge and fixed top edge.
 fn pointer_floating_resize_stops_at_edges_and_waits_for_cursor_to_return() {
     for name in ["resize-right", "resize-left", "resize-bottom", "resize", "resize-bottom-left"] {
         let ctx = Context::default();
@@ -1700,6 +1752,8 @@ fn unchanged_tab_slots_are_explicit_noops_with_bounded_insertion_markers() {
 }
 
 #[test]
+/// A host drag handler that accepts the release as a no-op consumes it, so no fallback float is
+/// emitted and the host observes one release.
 fn host_owned_noop_consumes_release_without_a_fallback_float() {
     struct Content(usize);
     impl DockContent<u32> for Content {
@@ -1810,6 +1864,7 @@ fn insertion_marker_handles_subpixel_strip_crossing_zero_without_panicking() {
 }
 
 #[test]
+/// A strip narrower than its tabs paints at least one ellipsis overflow symbol.
 fn overflowing_strip_paints_a_single_ellipsis_symbol() {
     use egui_kittest::Harness;
     fn paints(shape: &egui::Shape, text: &str) -> bool {
@@ -1853,6 +1908,7 @@ fn swapped() -> Layout<u32> {
 }
 
 #[test]
+/// Replacing the layout during a tab drag ends the drag, so the new layout is not modified.
 fn replacing_the_layout_ends_a_drag_in_progress() {
     use super::testing::DockDriver;
     let area = Id::unique("replaced");

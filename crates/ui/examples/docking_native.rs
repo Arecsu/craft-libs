@@ -24,6 +24,8 @@ struct App {
 }
 
 impl eframe::App for App {
+    /// Render the dock, apply every returned action with default permissions, print floating
+    /// window places, and forward residual native-window events to the host.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let style = DockStyle::from_ui(ui);
         let out = DockArea::new(egui::Id::unique("dock")).show_content(ui, &self.layout, &style, &mut Panels);

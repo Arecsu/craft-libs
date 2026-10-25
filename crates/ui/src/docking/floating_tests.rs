@@ -125,6 +125,8 @@ impl Driver {
         driver
     }
 
+    /// One 800×600 frame with an inserted modifier event, optional split-tree style/native
+    /// windows/maximized frame/hidden panels. Clears texture deltas and returns `DockOutput`.
     fn frame(&mut self, mut events: Vec<Event>) -> DockOutput<u32> {
         let mut output = DockOutput::default();
         events.insert(0, Event::ModifiersChanged(self.modifiers));
@@ -286,6 +288,8 @@ fn title_bar_drag_onto_dock_targets_docks_the_window() {
 }
 
 #[test]
+/// A group dragged to another floating window's top band splits that window like a frame; the gap
+/// between groups is not a target, and the window divider resizes both sides.
 fn a_floating_window_is_a_tree_whose_groups_split_and_resize_like_frames() {
     // A group dragged by its bar to another window's top band splits that window's group.
     let mut d = Driver::new(workspace(), false);
@@ -315,6 +319,8 @@ fn a_floating_window_is_a_tree_whose_groups_split_and_resize_like_frames() {
 }
 
 #[test]
+/// Double-clicking the window title toggles minimization of the whole window; the close box sits
+/// 10 pt in from the trailing edge and emits `CloseWindow`, removing every panel in the window.
 fn title_bar_double_click_minimizes_every_group_and_close_box_closes_the_window() {
     let mut d = Driver::new(workspace(), false);
     let title = d.title(5).center();
@@ -404,6 +410,9 @@ fn the_split_tree_outer_edge_band_is_8_pt() {
 }
 
 #[test]
+/// Maximizing a frame makes it start at the area edge; another frame's tab is not rendered and the
+/// hidden floating window's move-group response is absent, so dragging its title emits no move. A
+/// floating panel cannot be maximized.
 fn maximized_frame_fills_the_area_and_other_frames_do_not_render_or_take_input() {
     let mut layout = frames();
     layout.floating.push(Floating::single(vec![5], 0, [400.0, 300.0, 200.0, 150.0]));
@@ -427,6 +436,8 @@ fn maximized_frame_fills_the_area_and_other_frames_do_not_render_or_take_input()
 }
 
 #[test]
+/// The tab context menu exposes the expected group actions without Minimize; Close Other emits
+/// `CloseOthers` leaving only the chosen tab, and Maximize Frame emits `ToggleMaximize`.
 fn close_other_panels_keeps_only_the_chosen_tab() {
     use egui_kittest::{Harness, kittest::Queryable};
     type State = (Content, Vec<Action<u32>>, Vec<DockEvent<u32>>);
@@ -495,6 +506,8 @@ fn hide_panels_keeps_protected_panels_and_the_except_set() {
 }
 
 #[test]
+/// A protected canvas that accepts splits is still kept when every panel is hidden, and draws
+/// neither a tab nor a drag bar.
 fn a_canvas_that_accepts_splits_is_still_protected() {
     let mut d = Driver::new(workspace(), false);
     d.content.beside = true;
@@ -522,6 +535,8 @@ fn native_window_falls_back_in_window_when_viewports_are_embedded() {
 
 #[cfg(feature = "native-windows")]
 #[test]
+/// With real viewports, a close event from a native window's backend produces `CloseWindow` and
+/// removes all of that window's panels.
 fn native_window_close_closes_its_panels() {
     use std::{cell::Cell, rc::Rc};
     let close = Rc::new(Cell::new(false));
@@ -564,6 +579,8 @@ fn native_window_close_closes_its_panels() {
 }
 
 #[test]
+/// `FloatingFrame` and `TitleBar` work without a dock area: close and menu clicks register, the bar
+/// drag reports its delta, and an edge drag resizes the frame.
 fn chrome_frame_and_title_bar_work_without_a_dock_area() {
     use chrome::{ChromeStyle, FloatingFrame, TitleBar};
     let ctx = Context::default();
@@ -612,6 +629,8 @@ fn chrome_frame_and_title_bar_work_without_a_dock_area() {
 }
 
 #[test]
+/// Hidden panels give up their split space; the remaining split hit is named by its layout path and
+/// dragging it emits `ResizeSplit` for exactly that path while the nested ratio changes.
 fn hidden_panels_leave_their_split_and_resizing_names_the_layout_path() {
     let layout = Layout {
         root: Some(Node::Split {
@@ -661,6 +680,8 @@ fn a_hidden_floating_window_does_not_cover_dock_targets() {
 }
 
 #[test]
+/// Each top resize edge sits directly above the title bar and keeps the opposite edges while
+/// dragging; the title bar still moves the window, and a focused top edge responds to arrow keys.
 fn top_edges_resize_from_the_band_above_the_title_bar() {
     // W2 holds [8] at [560, 300, 200, 200]; each top handle keeps the opposite edges.
     let area = Id::unique(AREA);
@@ -686,6 +707,8 @@ fn top_edges_resize_from_the_band_above_the_title_bar() {
 }
 
 #[test]
+/// Undock Panel Group from one group of a stacked floating window emits `MoveGroup` to a float and
+/// separates exactly that group; a window with only one group has no undock entry.
 fn undock_panel_group_floats_one_group_of_a_floating_window() {
     use egui_kittest::{Harness, kittest::Queryable};
     let stacked = || Layout {

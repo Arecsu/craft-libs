@@ -127,10 +127,13 @@ pub fn align_galley_rows(mut galley: Arc<Galley>, width: f32, mut align: impl Fn
 mod tests {
     use super::*;
 
+    /// The three-row fixture (`Short` / `A longer line` / `End`) laid out at 1.0 ppp and left aligned.
     fn layout() -> Arc<Galley> {
         layout_text("Short\nA longer line\nEnd", 1.0, Align::Min)
     }
 
+    /// A fresh context at `ppp` with one settling pass, then a simple job of `text` with the requested
+    /// halign and infinite width.
     fn layout_with_context(text: &str, ppp: f32, halign: Align) -> (egui::Context, Arc<Galley>) {
         let ctx = egui::Context::default();
         ctx.set_pixels_per_point(ppp);
@@ -141,10 +144,13 @@ mod tests {
         (ctx, galley)
     }
 
+    /// Convenience wrapper returning only the galley from [`layout_with_context`].
     fn layout_text(text: &str, ppp: f32, halign: Align) -> Arc<Galley> {
         layout_with_context(text, ppp, halign).1
     }
 
+    /// Destructure an aligned result into galley, paint offset and reading rect; a valid fixture must
+    /// not become `InvalidWidth`.
     fn parts(aligned: &AlignedGalley) -> (&Arc<Galley>, Vec2, Rect) {
         match aligned {
             AlignedGalley::Aligned { galley, paint_offset, reading_rect } => (galley, *paint_offset, *reading_rect),
@@ -152,6 +158,7 @@ mod tests {
         }
     }
 
+    /// Compare two rects componentwise within `epsilon`.
     fn close_rect(actual: Rect, expected: Rect, epsilon: f32) {
         assert!((actual.min - expected.min).length() <= epsilon, "{actual:?} != {expected:?}");
         assert!((actual.max - expected.max).length() <= epsilon, "{actual:?} != {expected:?}");
@@ -159,6 +166,10 @@ mod tests {
 
     // The pre-normalization row placement, independent of the new wrapper/offset code. This is
     // the old physical-pixel floor formula, applied to the original shared glyph rows.
+    /// Reconstruct the previous physical-pixel floor placement as an independent oracle. The
+    /// reference starts from a rect of the requested width, recomputes each row's x from the alignment
+    /// factor, and unions each row rect and translated ink bound into its `rect` and `mesh_bounds`;
+    /// overwide rows therefore extend the rect past the requested width.
     fn reading_space_reference(original: &Galley, width: f32, alignments: &[Align]) -> Arc<Galley> {
         let mut reference = original.clone();
         reference.rect = Rect::from_min_size(Pos2::ZERO, vec2(width, original.rect.height()));
@@ -174,6 +185,8 @@ mod tests {
     }
 
     #[test]
+    /// Per-row alignment at width 400 keeps row Y positions, the shared job and row arcs, and vertex
+    /// and index counts; the returned logical width is 400 and every translated ink bound is contained.
     fn independent_row_alignment_preserves_shaping_and_cached_geometry() {
         let original = layout();
         let positions: Vec<_> = original.rows.iter().map(|row| row.pos).collect();
@@ -213,6 +226,9 @@ mod tests {
     }
 
     #[test]
+    /// NaN, infinite and negative widths return `InvalidWidth` without calling the alignment callback
+    /// or changing the galley and halign; there is no reading rect, and painting still uses the original
+    /// galley at the given origin.
     fn invalid_widths_preserve_the_input() {
         for halign in [Align::Min, Align::Center, Align::Max] {
             let original = layout_text("Short", 1.0, halign);
@@ -231,6 +247,9 @@ mod tests {
     }
 
     #[test]
+    /// At 2.0 ppp, an unbreakably wide row at width 23.3 keeps the requested reading edge through the
+    /// paint offset for Min/Center/Max: physical x is pixel-aligned and within half a pixel of the
+    /// expected alignment, and all logical and ink bounds contain the row.
     fn overwide_rows_keep_the_requested_reading_edge() {
         let original = layout_text("unbreakable-long-token", 2.0, Align::Min);
         let width = 23.3;
@@ -258,6 +277,8 @@ mod tests {
     }
 
     #[test]
+    /// A right-aligned overwide row extends left of zero while its right edge stays at the requested
+    /// reading edge, and the public logical rect contains the actual row.
     fn overwide_right_aligned_rows_have_complete_logical_bounds() {
         let original = layout_text("unbreakable-long-token", 2.0, Align::Min);
         let width = 23.3;
@@ -272,6 +293,9 @@ mod tests {
     }
 
     #[test]
+    /// Fractional width 163.3 with any original halign normalizes the result to a left anchor: halign
+    /// becomes Min, offset is zero, the logical rect is 0..163.3, and rows keep pixel-snapped absolute
+    /// positions.
     fn fractional_width_and_nonleft_input_normalize_the_anchor() {
         for original_align in [Align::Min, Align::Center, Align::Max] {
             let original = layout_text("Short", 2.0, original_align);
@@ -291,6 +315,8 @@ mod tests {
     }
 
     #[test]
+    /// Empty, whitespace-only and trailing-newline text produce a valid container rect of the requested
+    /// width and original height; a cleared row list gives zero height and `Rect::NOTHING` ink.
     fn empty_and_whitespace_rows_have_valid_logical_bounds() {
         for text in ["", "   ", "Short\n"] {
             let original = layout_text(text, 1.0, Align::Min);
@@ -315,6 +341,9 @@ mod tests {
     }
 
     #[test]
+    /// At fractional scales, zero and fractional widths, aligning directly and re-aligning after a
+    /// different first width produce identical reading rects, offsets, logical/ink bounds and row
+    /// positions; row x positions are pixel-snapped in physical space.
     fn fractional_scale_zero_width_and_repeated_alignment_keep_absolute_positions() {
         for ppp in [1.25, 1.5] {
             let original = layout_text("Short", ppp, Align::Center);
@@ -343,6 +372,10 @@ mod tests {
     }
 
     #[test]
+    /// A synthetic cached quad with binary32 rounding differences keeps its glyph arcs shared. The
+    /// normalized offset is exactly the whitespace shift; `mesh_bounds` contains every translated vertex
+    /// and the complete legacy rect, equals the union of both rounding directions, survives repetition,
+    /// and remains `Rect::NOTHING` when all ink is empty.
     fn fractional_ink_bounds_contain_translated_rectangles_and_vertices() {
         // A synthetic cached quad isolates the two directions of binary32 rounding. The
         // whitespace row supplies the normalization offset without contributing any ink.
@@ -456,6 +489,8 @@ mod tests {
     }
 
     #[test]
+    /// The logical container width follows the reading width while ink bounds stay the glyph extent;
+    /// whitespace has a container but no ink bounds.
     fn logical_container_and_ink_bounds_remain_distinct() {
         let result = align_galley_rows(layout_text("Short", 1.0, Align::Min), 400.0, |_| Align::Min);
         let (aligned, _, _) = parts(&result);
@@ -468,6 +503,7 @@ mod tests {
     }
 
     #[test]
+    /// A uniquely owned galley is reused at the same allocation instead of being cloned.
     fn uniquely_owned_galley_reuses_its_allocation() {
         let original = Arc::new((*layout()).clone());
         assert_eq!(Arc::strong_count(&original), 1);
@@ -479,6 +515,8 @@ mod tests {
     const MIXED: &str = "First extraordinarily long reading row\nSecond independently aligned reading row\nThird right-aligned overwide reading row";
     const ALIGNMENTS: [Align; 3] = [Align::Min, Align::Center, Align::Max];
 
+    /// Assert the mixed fixture's three rows each overflow `width`, then apply Min/Center/Max in that
+    /// order through `align_galley_rows`.
     fn mixed(original: Arc<Galley>, width: f32) -> AlignedGalley {
         assert_eq!(original.rows.len(), ALIGNMENTS.len());
         assert!(original.rows.iter().all(|row| row.size.x > width), "each fixture row must overflow");
@@ -493,6 +531,9 @@ mod tests {
     }
 
     #[test]
+    /// Across fractional scales and widths 0/23.3, mixed overflow matches the independent oracle after
+    /// translating by the offset, shares row arcs, preserves absolute Y positions, and keeps the
+    /// reading rect at the requested width.
     fn mixed_overflow_normalizes_bounds_without_changing_absolute_rows_or_ink() {
         for ppp in [1.25, 1.5, 2.0] {
             let original = layout_text(MIXED, ppp, Align::Center);
@@ -523,6 +564,8 @@ mod tests {
     }
 
     #[test]
+    /// `text_shape` anchors rotation at the complete logical bound rather than the reading rect; row
+    /// corners and the visual ink bounds match an independently rotated oracle for several anchors.
     fn public_text_shape_uses_the_complete_logical_bound_for_rotation_anchors() {
         let original = layout_text(MIXED, 1.5, Align::Min);
         let expected = reading_space_reference(&original, 23.3, &ALIGNMENTS);
@@ -555,6 +598,9 @@ mod tests {
     }
 
     #[test]
+    /// At fractional DPI and origins, including points straddling a physical pixel, `paint` emits one
+    /// text shape whose tessellated vertices, indices, UVs and colors match the reading-space reference
+    /// at the same physical pixels, with text rounding both on and off.
     fn painter_preserves_visible_vertices_at_fractional_origins_and_dpi() {
         for ppp in [1.25, 1.5, 2.0] {
             let (ctx, original) = layout_with_context(MIXED, ppp, Align::Min);

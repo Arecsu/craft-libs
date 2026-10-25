@@ -120,6 +120,8 @@ impl HandleTest {
         }
     }
 
+    /// Run one enabled `ResizeHandle` in a 400×200 frame and return its response plus the frame
+    /// output; texture deltas are cleared.
     fn frame(&mut self, events: Vec<Event>) -> (ResizeResponse, FullOutput) {
         let ctx = self.ctx.clone();
         let mut result = None;

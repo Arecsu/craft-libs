@@ -108,6 +108,9 @@ impl Driver {
         driver
     }
 
+    /// One 800×600 frame with injected events and the driver's focus/right-to-left settings.
+    /// Renders the dock in a 600×600 scope, clears texture deltas, records shapes, and returns
+    /// `DockOutput`.
     fn frame(&mut self, events: Vec<Event>) -> DockOutput<u32> {
         let mut output = DockOutput::default();
         self.time += 1.0 / 60.0;
@@ -432,6 +435,8 @@ fn a_column_takes_groups_anywhere_in_it_and_as_tabs() {
 }
 
 #[test]
+/// A column of five groups with a 160 pt minimum is taller than the window; scrolling up over its
+/// tab strip moves the last tab more than 100 pt into view.
 fn a_column_too_tall_for_the_window_scrolls() {
     let groups: [&[u32]; 5] = [&[2], &[3], &[4], &[5], &[6]];
     let mut d = Driver::with(docked(Side::Start, &[&groups]), TestContent { min_height: 160.0 }, false);
@@ -483,6 +488,8 @@ fn column_bar_drag_moves_the_column_and_away_from_a_dock_floats_its_groups() {
 }
 
 #[test]
+/// Escape, focus loss, pointer exit and `cancel_drag` each end a held column drag without emitting
+/// actions or a group drop; the release changes nothing and the layout equals the original.
 fn column_drag_escape_focus_loss_pointer_exit_and_cancel_drag_leave_the_layout_unchanged() {
     let layout = docked(Side::Start, &[&[&[2], &[3]], &[&[5]]]);
     for case in ["escape", "focus", "exit", "cancel"] {
@@ -635,6 +642,9 @@ fn a_column_s_first_tab_dropped_on_its_own_column_edge_anchors_on_another_panel(
 }
 
 #[test]
+/// A driver that never reported window focus can still drag tab 3 to a column edge (moving it after
+/// panel 4). When focus arrives and is then lost mid-drag, releasing emits no action and restores the
+/// original layout.
 fn a_window_that_never_reported_focus_drags_tabs_and_losing_focus_cancels_a_drag() {
     let mut layout = docked(Side::Start, &[&[&[2]], &[&[3, 4]]]);
     if let Some(Node::Split { size, .. }) = &mut layout.root {

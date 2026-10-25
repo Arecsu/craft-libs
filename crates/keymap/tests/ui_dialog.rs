@@ -66,6 +66,10 @@ impl Fx {
     }
 }
 
+/// Build an egui_kittest harness around `Fx`.
+///
+/// Installs and checks the pinned fonts every frame, selects window or inline dialog mode, records
+/// emitted outcomes, and flags any key press still present after the dialog ran.
 fn harness(fx: Fx, size: Vec2) -> Harness<'static, Fx> {
     let mut h = Harness::builder().with_size(size).with_context_setup(test_fonts::configure).build_ui_state(
         |ui, fx: &mut Fx| {

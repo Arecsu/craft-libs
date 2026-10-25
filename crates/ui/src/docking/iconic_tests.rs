@@ -160,6 +160,8 @@ fn icon_click_opens_a_flyout_on_the_canvas_side_and_auto_collapse_closes_it() {
 }
 
 #[test]
+/// Choosing Auto-Collapse Iconic Panels from the iconic column's menu emits a
+/// `DockEvent::ToggleAutoCollapse` event rather than mutating the layout directly.
 fn auto_collapse_toggle_is_a_column_menu_event() {
     use egui_kittest::{Harness, kittest::Queryable};
     let layout = docked(&[&[1, 2]], true);

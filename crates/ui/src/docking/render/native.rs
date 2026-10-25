@@ -836,6 +836,11 @@ pub(super) fn body_input(ctx: &Context) -> Arc<egui::mutex::Mutex<NativeBodyInpu
     ctx.data_mut(|data| data.get_temp_mut_or_default::<Arc<egui::mutex::Mutex<NativeBodyInput>>>(body_input_key()).clone())
 }
 
+/// The temp-data key for the context's native body-routing state.
+///
+/// All dock areas in a context deliberately use this one container: its `routes` map is keyed by
+/// dock-area `Id`, and queued and held events by target viewport. The key is unique only so this
+/// state does not collide with unrelated temporary data.
 fn body_input_key() -> Id {
     Id::unique("craft-ui docking native body input")
 }
@@ -847,6 +852,15 @@ impl egui::Plugin for NativeInput {
         "craft-ui docking native input"
     }
 
+    /// Route this viewport's input without deadlocking.
+    ///
+    /// Only the root viewport advances the frame pass; queued and held entries older than the
+    /// current pass are pruned. Events waiting for this viewport are taken before routing, so events
+    /// enqueued by routing wait for its next input. A held release is only released once a later
+    /// root pass exists. Earlier routed events are spliced before the window's own events, and any
+    /// accepted route requests a root repaint. The dock area's application hook is called only
+    /// after the routing mutex is dropped because it may cancel a drag and re-enter the shared
+    /// body state.
     fn input_hook(&mut self, ctx: &Context, input: &mut RawInput) {
         let viewport = input.viewport_id;
         let body = body_input(ctx);

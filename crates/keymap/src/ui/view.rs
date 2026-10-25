@@ -620,6 +620,15 @@ impl Draw<'_, '_> {
         (chips + ICON + CHIP_GAP).max(110.0).min(width * 0.4)
     }
 
+    /// Draw the command table and own its keyboard focus and row navigation.
+    ///
+    /// The table is a focusable non-interactive region. While focused and not recording, arrow,
+    /// Home/End, Enter and Delete are consumed by `table_keys`; while a shortcut cell is recording,
+    /// focus uses `FOCUS_LOCK` so the recording receives keys, and losing focus stops recording.
+    /// Rows are built from the cached lines, reveal scrolling centers the selected row when needed,
+    /// and the selected rendered row becomes the active accessibility descendant. Dispatched row
+    /// actions select, record, reset or toggle a group; group toggles keep focus, other actions
+    /// refocus the table.
     fn table(&mut self, ui: &mut Ui) {
         let rect = ui.max_rect();
         let table_id = self.base.with("table");
@@ -828,6 +837,15 @@ impl Draw<'_, '_> {
         clicked.then(|| RowAction::Toggle(name.to_string()))
     }
 
+    /// Draw one command row and return at most one action.
+    ///
+    /// The row always senses clicks and can be selected even when the dialog is read-only;
+    /// `editable` additionally enables shortcut-cell hit testing and the add/reset controls. The
+    /// accessibility label gains "(cycles)" and "(Changed)" suffixes, and the visual row uses
+    /// selected/focused and RTL-mirrored styling. A recording cell for this command shows the
+    /// recording text; clicking a chip records that binding, clicking an empty cell records the
+    /// first binding, and the plus button records an appended binding. The final fallback action is
+    /// selecting the clicked row.
     fn row(&self, ui: &mut Ui, rect: Rect, r: &Row, shortcut_w: f32, focused: bool) -> Option<RowAction> {
         let editable = self.env.options.editable;
         let selected = self.state.selected.as_ref() == Some(&r.command);

@@ -189,6 +189,11 @@ const CASES: &[Case] = &[
 ];
 
 #[test]
+/// Write review screenshots when `CRAFT_KEYMAP_SNAPSHOT_DIR` is set.
+///
+/// For every case whose name starts with `CRAFT_KEYMAP_SNAPSHOT_ONLY`, renders light and dark at
+/// 1× and 2× with the pinned fonts, optional sets and long labels, after running the case action.
+/// Without the directory variable the test does nothing; these are not golden comparisons.
 fn dialog_screenshots() {
     let Some(dir) = std::env::var_os("CRAFT_KEYMAP_SNAPSHOT_DIR").map(PathBuf::from) else { return };
     std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));

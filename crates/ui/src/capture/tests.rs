@@ -3,10 +3,12 @@ use std::sync::{Arc, Barrier};
 
 use super::*;
 
+/// Allocate a filled `Arc<ColorImage>` fixture of `size` with every pixel set to `color`.
 fn image(size: [usize; 2], color: egui::Color32) -> Arc<ColorImage> {
     Arc::new(ColorImage::filled(size, color))
 }
 
+/// Install a repaint observer and return the viewport requests it records.
 fn observe_repaints(ctx: &Context) -> Arc<Mutex<Vec<ViewportId>>> {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let observed = requests.clone();
@@ -15,6 +17,7 @@ fn observe_repaints(ctx: &Context) -> Arc<Mutex<Vec<ViewportId>>> {
 }
 
 #[test]
+/// Compile-time assertion that `CaptureSlot` and `ScreenshotCallback` are `Send + Sync`.
 fn slot_is_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<CaptureSlot>();
@@ -22,6 +25,8 @@ fn slot_is_send_and_sync() {
 }
 
 #[test]
+/// Two independent slots for different viewports may complete in reverse order; each `take`
+/// returns exactly its own image and dimensions.
 fn distinct_requests_complete_in_reverse_order() {
     let ctx = Context::default();
     let first_viewport = ViewportId::from_hash_of("first-window");
@@ -44,6 +49,9 @@ fn distinct_requests_complete_in_reverse_order() {
 }
 
 #[test]
+/// Slots keep separate results and byte caps: a 2×2 image over the first slot's 4-byte cap is
+/// rejected as too large while the second stays pending, then the second accepts its own image and
+/// a taken slot remains empty.
 fn slots_do_not_share_results_or_byte_bounds() {
     let ctx = Context::default();
     let first_viewport = ViewportId::from_hash_of("first-slot");
@@ -64,6 +72,8 @@ fn slots_do_not_share_results_or_byte_bounds() {
 }
 
 #[test]
+/// Cloned callbacks share one completion: the first result wins, the losing image is released, and
+/// `take` yields the result only once.
 fn callback_clones_share_one_completion_and_take_is_single_use() {
     let ctx = Context::default();
     let (slot, callback) = CaptureSlot::new(&ctx, ViewportId::ROOT, 1024);
@@ -82,6 +92,8 @@ fn callback_clones_share_one_completion_and_take_is_single_use() {
 }
 
 #[test]
+/// After `take`, both a duplicate callback and a direct completion release their images without
+/// storing a result or requesting a repaint.
 fn duplicate_completion_after_take_neither_stores_nor_wakes() {
     let ctx = Context::default();
     let requests = observe_repaints(&ctx);
@@ -110,6 +122,7 @@ fn duplicate_completion_after_take_neither_stores_nor_wakes() {
 }
 
 #[test]
+/// An early `take` returns `None` without closing the request; a later completion still delivers.
 fn take_before_completion_is_empty_and_keeps_the_request_open() {
     let ctx = Context::default();
     let (slot, callback) = CaptureSlot::new(&ctx, ViewportId::ROOT, 1024);
@@ -120,6 +133,8 @@ fn take_before_completion_is_empty_and_keeps_the_request_open() {
 }
 
 #[test]
+/// Cancelling before completion releases a late image, leaves `take` empty, and suppresses the
+/// repaint wakeup.
 fn cancel_releases_late_images_without_waking() {
     let ctx = Context::default();
     let requests = observe_repaints(&ctx);
@@ -138,6 +153,8 @@ fn cancel_releases_late_images_without_waking() {
 }
 
 #[test]
+/// A ready slot retains its image and has woken once; `cancel` releases the image and does not wake
+/// again.
 fn cancel_after_ready_releases_the_image() {
     let ctx = Context::default();
     let requests = observe_repaints(&ctx);
@@ -157,6 +174,7 @@ fn cancel_after_ready_releases_the_image() {
 }
 
 #[test]
+/// Dropping the slot releases an image that is only retained by the completed slot.
 fn dropping_the_slot_releases_a_completed_image() {
     let ctx = Context::default();
     let (slot, callback) = CaptureSlot::new(&ctx, ViewportId::ROOT, 1024);
@@ -171,6 +189,7 @@ fn dropping_the_slot_releases_a_completed_image() {
 }
 
 #[test]
+/// A completion after the slot is dropped releases the image and does not wake the viewport.
 fn late_completion_after_drop_is_inert() {
     let ctx = Context::default();
     let requests = observe_repaints(&ctx);
@@ -188,6 +207,8 @@ fn late_completion_after_drop_is_inert() {
 }
 
 #[test]
+/// Callbacks hold only a weak reference: the slot state has one strong owner, dropping the slot
+/// releases the context and state, and a later completion is inert.
 fn callback_retains_only_a_weak_reference_to_live_state() {
     let ctx = Context::default();
     let requests = observe_repaints(&ctx);
@@ -208,6 +229,8 @@ fn callback_retains_only_a_weak_reference_to_live_state() {
 }
 
 #[test]
+/// A completion distinguishes the per-image size cap, a malformed pixel buffer, and overflow of
+/// the pixel or byte count; a returned error is taken at most once.
 fn rejects_oversized_malformed_and_overflowing_images() {
     let ctx = Context::default();
 
@@ -232,6 +255,8 @@ fn rejects_oversized_malformed_and_overflowing_images() {
 }
 
 #[test]
+/// Oversized and malformed images are dropped immediately and each rejection still wakes the error
+/// consumer exactly once before `take` reports it.
 fn rejected_oversized_and_malformed_images_are_released_before_take() {
     let ctx = Context::default();
     let requests = observe_repaints(&ctx);
@@ -254,6 +279,8 @@ fn rejected_oversized_and_malformed_images_are_released_before_take() {
 }
 
 #[test]
+/// Any zero width or height is rejected as malformed before overflow or size-cap decisions, even
+/// for extreme extents such as `usize::MAX × 0`.
 fn zero_area_images_are_rejected_even_with_extreme_extents() {
     let ctx = Context::default();
 
@@ -270,6 +297,7 @@ fn zero_area_images_are_rejected_even_with_extreme_extents() {
 }
 
 #[test]
+/// A 2×2 image at exactly the 16-byte cap is accepted: the bound is inclusive.
 fn accepts_an_image_exactly_at_the_byte_bound() {
     let ctx = Context::default();
     let (slot, callback) = CaptureSlot::new(&ctx, ViewportId::ROOT, 16);
@@ -279,6 +307,8 @@ fn accepts_an_image_exactly_at_the_byte_bound() {
 }
 
 #[test]
+/// A worker thread completes a child-window slot; every recorded wake belongs to that slot's
+/// viewport and the expected image is delivered.
 fn another_thread_completes_and_wakes_only_the_owning_viewport() {
     let ctx = Context::default();
     let requests = observe_repaints(&ctx);
@@ -298,6 +328,8 @@ fn another_thread_completes_and_wakes_only_the_owning_viewport() {
 }
 
 #[test]
+/// The repaint observer can `take` the image re-entrantly: `try_lock` succeeds during the wakeup,
+/// proving the slot lock is released before `request_repaint_of`.
 fn wakeup_runs_after_the_slot_lock_is_released() {
     let ctx = Context::default();
     let (slot, callback) = CaptureSlot::new(&ctx, ViewportId::ROOT, 1024);
@@ -386,6 +418,7 @@ fn complete_cancel_and_take_race_without_retaining_or_double_waking() {
 }
 
 #[test]
+/// A zero byte budget rejects any nonempty image as too large and wakes once.
 fn zero_budget_rejects_a_nonempty_image_and_wakes() {
     let ctx = Context::default();
     let requests = observe_repaints(&ctx);
@@ -396,6 +429,7 @@ fn zero_budget_rejects_a_nonempty_image_and_wakes() {
 }
 
 #[test]
+/// Two threads racing on `take` produce exactly one result, and a subsequent take is empty.
 fn concurrent_takers_receive_the_result_exactly_once() {
     let ctx = Context::default();
     let (slot, callback) = CaptureSlot::new(&ctx, ViewportId::ROOT, 4);
@@ -422,6 +456,8 @@ fn concurrent_takers_receive_the_result_exactly_once() {
 }
 
 #[test]
+/// A renderer thread can complete a capture while a UI closure is blocked; the image is delivered
+/// and the owning child viewport is woken exactly once.
 fn renderer_completion_during_a_live_ui_pass_can_wake_and_deliver() {
     let ctx = Context::default();
     let requests = observe_repaints(&ctx);

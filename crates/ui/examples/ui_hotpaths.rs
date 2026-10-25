@@ -52,6 +52,9 @@ struct Frames {
     galleys_after_warmup: usize,
 }
 
+/// Run all micro and dock/integration cases at 1× and 2×, gate each case, and emit the schema-3
+/// JSON report to `CRAFT_UI_PERF_OUT` (or stdout). Fails when no bundled or fixture font is
+/// available.
 fn main() -> Result<(), Box<dyn Error>> {
     let (fonts, font_names) = font_definitions()?;
     if font_names.is_empty() {
@@ -182,6 +185,9 @@ fn toolbar_widths(count: usize) -> Vec<f32> {
     (0..count).map(|i| 24.0 + ((i * 13) % 48) as f32).collect()
 }
 
+/// Time `op` after at least 50 warmup calls and 3 seconds, record 50 batch-mean samples (2000
+/// operations per batch for split cases, 16 otherwise), and also record diagnostic single-call
+/// latencies. Returns the counts, samples and summaries without p95/p99 where noted.
 fn micro_entry(name: &str, params: Value, mut op: impl FnMut()) -> Value {
     let warmup_start = Instant::now();
     let mut warmups = 0;
@@ -223,6 +229,7 @@ fn micro_entry(name: &str, params: Value, mut op: impl FnMut()) -> Value {
            "individual_latency_note": "diagnostic only; timer overhead dominates single sub-microsecond calls"})
 }
 
+/// Sort a copy of `samples` and return count, median, p95, p99, min and max in nanoseconds.
 fn summarize(samples: &[u64]) -> Value {
     let mut sorted = samples.to_vec();
     sorted.sort_unstable();
@@ -231,6 +238,8 @@ fn summarize(samples: &[u64]) -> Value {
            "max_ns": sorted.last().copied().unwrap_or(0)})
 }
 
+/// Nearest-rank percentile of an ascending slice. Empty input returns 0; the index is clamped to
+/// the last element.
 fn percentile(sorted: &[u64], percent: usize) -> u64 {
     if sorted.is_empty() {
         return 0;
@@ -238,6 +247,8 @@ fn percentile(sorted: &[u64], percent: usize) -> u64 {
     sorted[(sorted.len() * percent).div_ceil(100).saturating_sub(1).min(sorted.len() - 1)]
 }
 
+/// Use egui's bundled fonts, or an empty definition set with the `CRAFT_UI_PERF_FONT` file inserted
+/// first in both proportional and monospace families. Returns the used font names.
 fn font_definitions() -> Result<(egui::FontDefinitions, Vec<String>), Box<dyn Error>> {
     let mut fonts = egui::FontDefinitions::default();
     if let Some(path) = env::var_os("CRAFT_UI_PERF_FONT") {
@@ -256,6 +267,8 @@ fn font_source() -> &'static str {
     if env::var_os("CRAFT_UI_PERF_FONT").is_some() { "CRAFT_UI_PERF_FONT (pinned fixture file)" } else { "egui default_fonts (bundled)" }
 }
 
+/// A headless context at `scale` with the given fonts, dark visuals, zero animation time and no
+/// cursor blinking.
 fn context(scale: f32, fonts: &egui::FontDefinitions) -> Context {
     let ctx = Context::default();
     ctx.set_pixels_per_point(scale);
@@ -272,6 +285,7 @@ fn screen_rect(viewport: [f32; 2]) -> Rect {
     Rect::from_min_size(pos2(0.0, 0.0), vec2(viewport[0], viewport[1]))
 }
 
+/// A focused 60 Hz input for `viewport` with a bounded texture side for headless frames.
 fn raw_input(viewport: [f32; 2], frame: usize) -> egui::RawInput {
     egui::RawInput {
         screen_rect: Some(screen_rect(viewport)),
@@ -282,6 +296,9 @@ fn raw_input(viewport: [f32; 2], frame: usize) -> egui::RawInput {
     }
 }
 
+/// Check that tab fitting partitions every index exactly once, uses finite nonnegative widths,
+/// stays within `available` (plus epsilon) including the overflow control, and keeps the selected
+/// tab (clamped to the last tab).
 fn check_tabs(natural: &[f32], selected: usize, available: f32, minimum: f32, overflow: f32) -> Result<(), Box<dyn Error>> {
     let fit = tabs::fit(natural, selected, available, minimum, overflow);
     let mut seen = vec![false; natural.len()];
@@ -309,6 +326,8 @@ fn check_tabs(natural: &[f32], selected: usize, available: f32, minimum: f32, ov
     Ok(())
 }
 
+/// Check a split layout: both panes are positive and sum to the span minus the gap, do not overlap
+/// or escape, `resized` stays finite, and an inverted rect is rejected. Returns the layout.
 fn check_split(rect: Rect, axis: SplitAxis, size: SplitSize, gap: f32, minimum: f32) -> Result<craft_ui::layout::SplitLayout, Box<dyn Error>> {
     let layout = split_rect(rect, axis, size, gap, minimum).ok_or("split_rect returned None")?;
     let (span, first, second) = match axis {
@@ -338,6 +357,9 @@ fn check_split(rect: Rect, axis: SplitAxis, size: SplitSize, gap: f32, minimum: 
     Ok(layout)
 }
 
+/// Check that toolbar fitting is an exact prefix partition: shown widths match the natural widths,
+/// overflow is the remaining suffix, a nonempty overflow reserves a positive control, and a
+/// zero-width group is rejected.
 fn check_toolbar(natural: &[f32], available: f32, spacing: f32, overflow: f32) -> Result<(), Box<dyn Error>> {
     let fit = fit_toolbar(natural, available, spacing, overflow).ok_or("fit_toolbar returned None")?;
     let mut expected = 0;
@@ -359,10 +381,12 @@ fn check_toolbar(natural: &[f32], available: f32, spacing: f32, overflow: f32) -
     Ok(())
 }
 
+/// A one-panel tabs node with the panel active.
 fn leaf(panel: u32) -> Node<u32> {
     Node::Tabs { panels: vec![panel], active: 0 }
 }
 
+/// A balanced recursive split fixture over `panels`, alternating the axis with `depth`.
 fn tree(panels: &[u32], depth: usize) -> Node<u32> {
     if panels.len() == 1 {
         return leaf(panels[0]);
@@ -376,6 +400,8 @@ fn tree(panels: &[u32], depth: usize) -> Node<u32> {
     }
 }
 
+/// The benchmark layout: with `with_floating`, a fixed 240 pt second column beside a vertical split
+/// plus floating window id 1; otherwise a balanced tree over `panels`.
 fn dock_layout(panels: u32, with_floating: bool) -> Layout<u32> {
     if with_floating {
         Layout {
@@ -402,6 +428,7 @@ fn panel_label(panel: &u32) -> String {
     format!("Panel {panel}")
 }
 
+/// Count texture-set images, their color bytes, and freed images in `delta`.
 fn texture_counts(delta: &egui::TexturesDelta) -> (usize, usize, usize) {
     let mut images = 0;
     let mut bytes = 0;
@@ -415,6 +442,8 @@ fn texture_counts(delta: &egui::TexturesDelta) -> (usize, usize, usize) {
     (images, bytes, delta.free.len())
 }
 
+/// Sum mesh vertices and indices, rejecting renderer callbacks because benchmark fixtures must not
+/// produce them.
 fn count_mesh(primitives: &[egui::epaint::ClippedPrimitive]) -> Result<(usize, usize), Box<dyn Error>> {
     let (mut vertices, mut indices) = (0, 0);
     for clipped in primitives {
@@ -432,6 +461,8 @@ fn count_mesh(primitives: &[egui::epaint::ClippedPrimitive]) -> Result<(usize, u
 // Fingerprint of one frame's tessellated primitives, beyond equal vertex/index counts. Texture IDs and
 // clip bounds are included. This is a 64-bit FNV-1a checksum, not an exact mesh identity. Timings stop
 // before this evidence collection.
+/// A 64-bit FNV-1a fingerprint over primitive count, clip rects, texture ids, vertex data and
+/// indices. This is a diagnostic checksum, not exact mesh identity; callbacks are rejected.
 fn mesh_hash(primitives: &[egui::epaint::ClippedPrimitive]) -> Result<u64, Box<dyn Error>> {
     let mut hash = 0xcbf29ce484222325u64;
     let mut feed = |bytes: &[u8]| {
@@ -476,6 +507,10 @@ fn mesh_hash(primitives: &[egui::epaint::ClippedPrimitive]) -> Result<u64, Box<d
     Ok(hash)
 }
 
+/// Run `FRAME_SAMPLES` measured frames after at least 50 warmup frames and 3 seconds. Times and
+/// completed passes are recorded for every measured frame; the final measured frame also collects
+/// bodies and the shapes, mesh counts and hash reported in the result. Texture and repaint counters
+/// aggregate over measured frames, and texture deltas are cleared each frame.
 fn measure_frames(
     ctx: &Context,
     viewport: [f32; 2],
@@ -524,6 +559,8 @@ fn measure_frames(
     Ok(result)
 }
 
+/// Check every recorded body is positive, finite and inside the viewport; non-floating bodies may
+/// not overlap by more than 0.5 pt. Returns the body count.
 fn check_bodies(screen: Rect, bodies: &BTreeMap<u32, Rect>, floating: &BTreeSet<u32>) -> Result<usize, Box<dyn Error>> {
     for (panel, rect) in bodies {
         if !rect.is_positive() || !rect.min.is_finite() || !rect.max.is_finite() {
@@ -545,6 +582,8 @@ fn check_bodies(screen: Rect, bodies: &BTreeMap<u32, Rect>, floating: &BTreeSet<
     Ok(bodies.len())
 }
 
+/// Check every interaction owned by the dock has a response with a positive hit rect inside the
+/// viewport. Returns the interaction count.
 fn check_interactions(ctx: &Context, dock_id: Id, screen: Rect) -> Result<usize, Box<dyn Error>> {
     let owned = ctx.data(|data| data.get_temp::<Vec<Id>>(dock_id.with("owned-interactions"))).unwrap_or_default();
     if owned.is_empty() {
@@ -562,6 +601,8 @@ fn check_interactions(ctx: &Context, dock_id: Id, screen: Rect) -> Result<usize,
     Ok(owned.len())
 }
 
+/// Move the pointer to the first body's tab center in a separate unmeasured frame and require the
+/// tab to hover; returns the probe JSON. The probe is excluded from timings and counters.
 fn probe_tab_hover(
     ctx: &Context,
     viewport: [f32; 2],
@@ -594,6 +635,8 @@ struct Case<'a> {
     scale: f32,
 }
 
+/// Render the fixture dock through `DockArea`, optionally recording each panel body's rect on the
+/// collection frame, and return the dock error.
 fn render_dock(
     ui: &mut egui::Ui,
     dock_id: Id,
@@ -629,6 +672,8 @@ struct Scene {
 }
 
 impl Scene {
+    /// Render the dock inside an optional 180 pt left panel and central panel, capturing panel geometry
+    /// and preserving the first dock error; otherwise render at the available rect.
     fn render(&mut self, layout: &Layout<u32>, ui: &mut egui::Ui, bodies: &mut BTreeMap<u32, Rect>, collect: bool) {
         if self.style.is_none() {
             self.style = Some(DockStyle::from_ui(ui));
@@ -657,6 +702,9 @@ impl Scene {
     }
 }
 
+/// Run one case end to end: validate the layout, measure frames, gate sample count, warmup, one
+/// completed pass per frame and dock error, check body count, interactions and geometry, run the
+/// hover probe, and return the case JSON.
 fn run_case(case: Case<'_>, fonts: &egui::FontDefinitions) -> Result<Value, Box<dyn Error>> {
     let ctx = context(case.scale, fonts);
     let dock_id = Id::unique(("ui-perf", case.label));

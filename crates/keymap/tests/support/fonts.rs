@@ -17,6 +17,10 @@ const INPUTS: [(&str, &str, &str); 2] = [
     ),
 ];
 
+/// Load the pinned craft-fonts inputs once for all dialog tests.
+///
+/// Requires an absolute `CRAFT_FONTS_DIR`, verifies the SHA-256 of both symbol faces, refuses any
+/// installed-font fallback, and appends the two pinned faces plus egui's Hack to every family.
 fn definitions() -> FontDefinitions {
     static FONTS: OnceLock<FontDefinitions> = OnceLock::new();
     FONTS
@@ -45,6 +49,7 @@ fn definitions() -> FontDefinitions {
         .clone()
 }
 
+/// Install the deterministic fonts on `ctx` before its first layout pass.
 pub fn configure(ctx: &egui::Context) {
     ctx.set_fonts(definitions());
 }

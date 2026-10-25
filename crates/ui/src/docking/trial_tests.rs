@@ -79,6 +79,8 @@ impl DockContent<u32> for GalleyLabels {
 }
 
 #[test]
+/// Galley-backed labels in shrunk tabs end in an ellipsis and stay wholly inside their tab, both
+/// for the active tab and for inactive tabs, at wide and narrow dock widths.
 fn galley_labels_in_shrunk_tabs_end_with_an_ellipsis_inside_the_tab_active_or_not() {
     let panels = [1, 2, 3, 4, 5, 6];
     let layout = Layout { root: Some(tabs(&panels, 3)), floating: Vec::new() };
@@ -189,6 +191,8 @@ fn double_click_on_the_active_tab_of_a_minimized_group_or_window_ends_expanded()
 }
 
 #[test]
+/// A pointer click on a tab shows no focus outline even if the platform then focuses it, while
+/// keyboard (Tab) focus paints the accent outline.
 fn a_clicked_tab_shows_no_focus_outline_but_tab_key_focus_does() {
     let mut d = Driver::new(frames());
     let accent = d.ctx.global_style().visuals.selection.stroke.color;
@@ -295,6 +299,8 @@ fn right_to_left_mirrors_the_tab_strip_and_its_insertion_slots() {
 }
 
 #[test]
+/// In a right-to-left title bar the close and menu buttons sit on the left, the drag surface ends at
+/// the bar's right edge, and a galley title is truncated with an ellipsis inside the bar.
 fn a_right_to_left_title_bar_puts_its_buttons_left_and_cuts_a_galley_title() {
     let ctx = Context::default();
     let mut shapes = Vec::new();
@@ -327,6 +333,8 @@ fn a_right_to_left_title_bar_puts_its_buttons_left_and_cuts_a_galley_title() {
 }
 
 #[test]
+/// With close buttons and close menu items disabled, no close control renders and tab menus contain
+/// neither Close Panel nor Close Tab Group; the host can still apply its own CloseWindow action.
 fn hidden_close_controls_leave_closing_to_the_host() {
     let layout = Layout { root: Some(tabs(&[1, 2], 0)), floating: vec![Floating::single(vec![5, 6], 0, [80.0, 70.0, 300.0, 220.0])] };
     let close = Id::unique(AREA).with(("move-group", Some(&5u32))).with("close");
@@ -361,6 +369,8 @@ fn apply_all_returns_every_panel_its_actions_closed() {
 }
 
 #[test]
+/// The column bar button and the column menu item expose distinct accessible names
+/// (`Collapse column to icons` versus `Collapse to Icons`).
 fn the_column_button_and_the_column_menu_item_have_distinct_names() {
     use egui_kittest::{Harness, kittest::Queryable};
     let mut h = Harness::builder().with_size(vec2(800.0, 600.0)).build_ui_state(

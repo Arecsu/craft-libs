@@ -396,6 +396,13 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         }
     }
 
+    /// Draw a panel body into `rect`.
+    ///
+    /// An unusable rect returns without painting. Otherwise the body runs in a clipped child scope,
+    /// and its minimum height is recorded against `rect.height()` for floating-size policy. Any
+    /// pointer press inside the body focuses the panel, including secondary and middle presses; with
+    /// native windows that press origin is stored for body-drag routing and the panel is recorded as
+    /// the pointed body. The panel's content map keeps the sizing entry for later frames.
     pub(super) fn contents(&mut self, ui: &mut Ui, panel: &P, rect: Rect) {
         if !crate::docking::targets::usable(rect) {
             return;

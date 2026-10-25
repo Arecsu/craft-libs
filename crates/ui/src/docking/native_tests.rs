@@ -75,6 +75,9 @@ enum Marks {
 }
 
 impl DockContent<u32> for Content {
+    /// Test body that probes native input: records events/raw events, text focus and typing, button
+    /// focus, a click counter, drag source state, drop sites and payloads, file hover/drop, and
+    /// primary/secondary presses inside the body.
     fn body(&mut self, ui: &mut egui::Ui, panel: &u32) {
         ui.label(format!("panel {panel}"));
         if self.input_probe == Some(*panel) {
@@ -1518,6 +1521,9 @@ fn resize_bands_are_a_few_points_deep_and_leave_out_the_bar_buttons() {
 }
 
 #[test]
+/// On macOS the close glyph sits 8 pt from the trailing corner in both directions; its hit area
+/// extends 10 pt away from the corner, reaches the bar bottom, leaves the drag area clear, and stays
+/// reachable outside AppKit's corner resize region.
 fn on_macos_the_close_glyph_sits_by_the_corner_and_its_hit_area_reaches_away_from_it() {
     use crate::docking::chrome::{ChromeStyle, TitleBar};
     use crate::docking::placement::BAR_HEIGHT;
@@ -1672,6 +1678,9 @@ fn a_native_window_takes_no_input_while_the_app_blocks_it() {
 }
 
 #[test]
+/// A blocked native window rejects typing but preserves native control-event order: IME reset
+/// completion and focus loss reach both event and raw-event readers, while a shortcut release is
+/// still forwarded to the host.
 fn a_blocked_native_window_preserves_ordered_ime_reset_completions() {
     let mut d = blocked_driver();
     let id = id_of(&d);

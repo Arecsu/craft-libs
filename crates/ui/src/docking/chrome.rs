@@ -175,6 +175,15 @@ impl<'a> FloatingFrame<'a> {
         shown.inner
     }
 
+    /// Draw the resize handles around `rect` and return `(resized, started, responses)`.
+    ///
+    /// `resized` is set only for an enabled, uncancelled handle whose clamped next rect differs
+    /// from the current one. `started` names the handle whose drag began, which can remain set after
+    /// Escape or focus loss cancels that drag. Keyboard arrow steps move an edge by 8 pt; pointer
+    /// drags derive the next rect from the cursor relative to the press origin. Limits clamp the
+    /// proposal. Stored pointer anchors are removed on cancellation or once the primary button is
+    /// released. Handles are accessibility buttons; the diagonal one is painted while hovered,
+    /// dragged or focused.
     fn handles(&self, ui: &mut Ui, rect: Rect, bounds: Rect, style: &ChromeStyle) -> (Option<Rect>, Option<Id>, Vec<Response>) {
         let mut resized = None;
         let mut started = None;
@@ -345,6 +354,15 @@ impl<'a> TitleBar<'a> {
         self
     }
 
+    /// Draw the title bar into `rect` and return its responses.
+    ///
+    /// `close_at` rects are in logical points, already mirrored in a right-to-left layout; without it
+    /// the × is a square the bar's height centered 10 pt in from the trailing edge. Menu and close
+    /// buttons reserve space on the trailing side, the draggable bar excludes them, and a title is
+    /// truncated to the bar's remaining width. The bar senses clicks and drags, while double-click
+    /// behavior (for example minimizing or closing) is the caller's. A right-to-left style mirrors
+    /// the layout; `move_label` remains the accessible name of the drag surface. The bar's own id
+    /// is used, with `"menu"` and `"close"` child ids for the buttons.
     pub fn show(self, ui: &mut Ui, rect: Rect, style: &ChromeStyle) -> TitleResponse {
         let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
         painter.rect_filled(rect, 0.0, style.title_background);

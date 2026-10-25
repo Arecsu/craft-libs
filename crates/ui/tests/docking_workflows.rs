@@ -77,6 +77,9 @@ impl Harness {
         harness
     }
 
+    /// One 520 pt-high frame through the real wgpu test renderer. Applies returned actions with
+    /// canvas protection (round-tripping them through JSON when `serde` is enabled), validates the
+    /// layout, and records body ids and applied actions.
     fn step(&mut self, events: Vec<Event>) {
         self.frame += 1;
         let input = RawInput {
@@ -180,6 +183,7 @@ impl Harness {
         }
     }
 
+    /// The response rect of `panel`'s tab in the workflow dock.
     fn tab(&self, panel: u32) -> Rect {
         self.ctx.read_response(Id::unique("workflow").with(("tab", &panel))).unwrap().rect
     }

@@ -36,6 +36,15 @@ const OVERFLOW_WIDTH: f32 = 22.0;
 const WHEEL_NOTCH: f32 = 40.0;
 
 impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
+    /// Draw one tab group at `rect`.
+    ///
+    /// An `active` index outside `panels` is a no-op. A lone protected panel is drawn stripless:
+    /// its whole rect is the body and its only tab has `Rect::NOTHING`. Side splits are offered
+    /// only for a `Frame` or `Floating` group whose selected panel accepts splits. Tab labels
+    /// shrink widest-first to the minimum width, then the remaining tabs move to the overflow menu;
+    /// hidden overflow tabs still appear in the drop target with `Rect::NOTHING`. `minimized` hides
+    /// the body but keeps the strip. Tabs, strip, header and drag bar are mirrored in right-to-left
+    /// layout.
     pub(super) fn group(&mut self, ui: &mut Ui, panels: &[P], active: usize, minimized: bool, rect: Rect, kind: GroupKind) {
         let Some(selected) = panels.get(active) else { return };
         self.record_float(panels, rect.size(), rect.size());
@@ -329,6 +338,9 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         anchors
     }
 
+    /// A stock menu button for `panel` whose visible text comes from
+    /// [`crate::docking::DockContent::label`] while its accessible name stays the logical `label_of`
+    /// value. The function only returns the response; the caller performs the menu action.
     pub(super) fn menu_label(&mut self, ui: &mut Ui, panel: &P) -> egui::Response {
         let logical = self.label_of(panel);
         let text = self.content.label(ui, panel, &logical, &self.style.font, self.style.text);
@@ -354,6 +366,14 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         ui.ctx().data(|d| d.get_temp::<bool>(key)).unwrap_or(false)
     }
 
+    /// Draw one tab inside `rect` and return its response.
+    ///
+    /// Clicking activates and focuses the panel. In a minimized group the first click expands and
+    /// records the time so that same click is not also interpreted as a double-click; a genuine
+    /// double-click toggles minimized only when the owner minimizes. Middle-click closes only when
+    /// the style enables it and the panel is closable. The context menu emits `Action`s, with float,
+    /// move and close entries gated by the panel's permissions. `owner: None` removes minimized
+    /// semantics and undock latching. An elided label exposes its full text as hover text.
     pub(super) fn tab(&mut self, ui: &mut Ui, panel: &P, rect: Rect, active: bool, group: Rect, owner: Option<&TabGroup<'_, P>>) {
         let minimized = owner.filter(|owner| self.minimizes(owner)).map(|owner| owner.minimized);
         let policy = self.permissions(panel);

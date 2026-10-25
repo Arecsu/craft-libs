@@ -49,6 +49,9 @@ pub enum CaptureError {
 }
 
 impl core::fmt::Display for CaptureError {
+    /// Format a human-readable rejection reason. The wording is informative only and is not an
+    /// API contract; the variants keep checked-overflow, malformed-image and size-cap cases
+    /// distinguishable.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::DimensionsOverflow { width, height } => {
@@ -136,33 +139,46 @@ impl CaptureSlot {
     }
 
     #[cfg(test)]
+    /// Nonblocking probe used by the wakeup test to prove that the slot mutex is free while the
+    /// repaint observer runs.
     fn lock_is_free(&self) -> bool {
         self.shared.state.try_lock().is_ok()
     }
 
     #[cfg(test)]
+    /// Count strong references to the shared slot state, proving callbacks retain none.
     fn state_strong_count(&self) -> usize {
         Arc::strong_count(&self.shared)
     }
 
     #[cfg(test)]
+    /// A weak handle to the shared state, used to inject a second completion directly when egui has
+    /// already consumed the public callback.
     fn state_weak(&self) -> Weak<Shared> {
         Arc::downgrade(&self.shared)
     }
 }
 
 impl Drop for CaptureSlot {
+    /// Cancel the request as the slot goes away. A later completion upgrades no live state and
+    /// releases its image, a retained ready image is dropped, and no repaint is requested. Results
+    /// already taken by the caller are unaffected.
     fn drop(&mut self) {
         close(&self.shared);
     }
 }
 
 impl core::fmt::Debug for CaptureSlot {
+    /// Format only the viewport and omit the remaining fields. The retained image and error payload
+    /// are deliberately hidden so logging cannot hold or dump screenshot contents.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("CaptureSlot").field("viewport", &self.shared.viewport).finish_non_exhaustive()
     }
 }
 
+/// Lock the slot state, recovering from poisoning instead of panicking. The guard must be
+/// released before entering the egui context or a repaint observer; completion and close do so
+/// before waking the viewport.
 fn lock(state: &Mutex<SlotState>) -> MutexGuard<'_, SlotState> {
     state.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -208,6 +224,13 @@ fn complete(weak: &Weak<Shared>, image: Arc<ColorImage>) {
     }
 }
 
+/// Validate `image` against the slot's per-image byte bound before publishing it.
+///
+/// Zero width or height is malformed before any arithmetic; the pixel count and its byte size use
+/// checked multiplication; the buffer length must equal `width * height`; and only then is the
+/// byte count compared with `max_image_bytes`, rejecting a count greater than it (equality is
+/// accepted). `max_image_bytes` bounds this one image, not an aggregate request budget. Returns the
+/// same `Arc` without waking the viewport or requesting a repaint.
 fn checked_image(image: Arc<ColorImage>, max_image_bytes: usize) -> Result<Arc<ColorImage>, CaptureError> {
     let [width, height] = image.size;
     if width == 0 || height == 0 {
