@@ -627,12 +627,17 @@ windows from the first frame. `DockArea::native_windows(bool)` overrides the cho
     (the window's top-left is the pointer minus the grab offset, less the bar's height). A
     Ctrl/Cmd-drag floats there wherever it is released.
   - *Moving a window.* Dragging the bar, the only tab of a window, or the drag area of its only
-    group moves the window, so the pressed point stays under the pointer. Each move is worked
-    out from a pointer move of that frame and the window's reported place, which the pointer's
-    position is relative to; a move commanded earlier may land late. A frame with no pointer
-    move leaves the window. X11 sends no move whose position in the window repeats the last
-    one, so while the pointer keeps exact pace with the window the window can trail it by one
-    move until the next. Released over a target in another window, the whole window docks or
+    group moves the window, so the pressed point stays under the pointer. On macOS each frame
+    puts the window at the cursor's desktop position (AppKit's `NSEvent::mouseLocation`) less
+    the pressed point, and targets are hit at that position. AppKit reports a window's new place
+    as soon as a move is commanded, but measures the pointer events it sends against where the
+    window server had the window, which can be a move behind; placing the window from those
+    events would overshoot and step back. Elsewhere each move is worked out from a pointer move
+    of that frame and the window's reported place, which the pointer's position is relative to;
+    a move commanded earlier may land late. A frame with no pointer move leaves the window. X11
+    sends no move whose position in the window repeats the last one, so while the pointer keeps
+    exact pace with the window the window can trail it by one move until the next. Released over
+    a target in another window, the whole window docks or
     joins there as its groups (`Action::MoveWindow`). The bar docks only with
     `DockStyle::title_bar_docks`; the only tab or group docks either way, since it is the way
     back in with that flag off. Targets: in the
@@ -732,7 +737,10 @@ OS windows: the main window's content sits at `origin` on the desktop, and each 
 runs its own frame with its own input and desktop rect (`host()`, `window_step`,
 `window_click`). `NativeHost` can report a monitor size (`monitor_size`), give windows a frame
 between their outer position and content (`frame`), land `OuterPosition` a frame late (`lag`),
-and report no positions (`no_position`, as on Wayland). A `HostWindow` takes files dragged
+and report no positions (`no_position`, as on Wayland). `window_pointer` moves the pointer to a
+desktop point in a native window; the host can tell that point as the cursor's (`tells_cursor`,
+as AppKit does) and measure the window's pointer events against its place some frames back
+(`stale`, a pattern taken one entry per call). A `HostWindow` takes files dragged
 over it (`hovered_files`) or dropped on it (`dropped_files`), and `with_native_input_hook`
 passes a hook to `DockArea::native_input_hook` every frame.
 

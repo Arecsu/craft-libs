@@ -126,6 +126,48 @@ fn set_window_opacity(title: &str, main: Option<&str>, opacity: f64) {
     }
 }
 
+/// Where the cursor is on the desktop, in egui's desktop points, for a native window that
+/// follows a bar drag.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(in crate::docking) enum DesktopCursor {
+    /// The window system's: AppKit's on macOS, none elsewhere.
+    #[default]
+    System,
+    /// A stand-in window system's (`docking::testing::NativeHost`), or none.
+    #[cfg(any(test, feature = "testing"))]
+    Fixed(Option<Pos2>),
+}
+
+impl DesktopCursor {
+    fn at(self, ctx: &Context) -> Option<Pos2> {
+        match self {
+            Self::System => system_cursor(ctx),
+            #[cfg(any(test, feature = "testing"))]
+            Self::Fixed(at) => at,
+        }
+        .filter(|p| p.is_finite())
+    }
+}
+
+/// AppKit's cursor, in the desktop points egui reports window positions in. AppKit measures
+/// from the bottom-left of the primary screen (the one with the menu bar, first in
+/// `NSScreen::screens`), y up; winit flips window positions against that screen's height,
+/// whichever screen a window is on, so the cursor is flipped the same way. egui's points are
+/// AppKit's divided by the zoom factor.
+#[cfg(target_os = "macos")]
+fn system_cursor(ctx: &Context) -> Option<Pos2> {
+    let mtm = objc2::MainThreadMarker::new()?;
+    let primary = objc2_app_kit::NSScreen::screens(mtm).firstObject()?;
+    let at = objc2_app_kit::NSEvent::mouseLocation();
+    let height = primary.frame().size.height;
+    Some(pos2(at.x as f32, (height - at.y) as f32) / ctx.zoom_factor())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_cursor(_: &Context) -> Option<Pos2> {
+    None
+}
+
 /// Whether native windows outline their ×'s hit area, and on macOS AppKit's resize areas:
 /// `CRAFT_DOCK_DEBUG_CLOSE=1`, read once.
 fn debug_close() -> bool {
@@ -748,21 +790,29 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         let Some(mut drag) = ui.ctx().data(|d| d.get_temp::<WindowDrag>(key)).filter(|d| d.window == window) else { return false };
         let content = ui.input(|i| content_of(i.viewport()));
         let frame = content.map_or(Vec2::ZERO, |(_, frame)| frame);
-        // A pointer move of this frame is relative to where the window was when the window
-        // system sent it, which is where it reports the window now: a move commanded earlier
-        // may not have landed yet. Without one the window stays, since the last position egui
-        // keeps (button events included) was measured against an older place.
-        let moved = ui.input(|i| i.events.iter().rev().find_map(|e| if let Event::PointerMoved(p) = e { Some(*p) } else { None }));
-        let mut step = None;
-        if let (Some((origin, _)), Some(local)) = (content, moved.filter(|p| p.is_finite())) {
-            let to = origin + (local.to_vec2() - drag.grab);
-            if to.distance(drag.to) > 0.0 {
-                (drag.to, step) = (to, Some(to));
-                ui.ctx().data_mut(|d| d.insert_temp(key, drag));
+        // Where the window system tells the cursor on the desktop (macOS), the window goes
+        // there: AppKit reports the window's place as soon as a move is commanded, but measures
+        // the pointer events it sends against where the window server had the window, which
+        // can be a move behind. Elsewhere a pointer move of this frame is relative to where the
+        // window was when the window system sent it, which is where it reports the window now:
+        // a move commanded earlier may not have landed yet. Without one the window stays, since
+        // the last position egui keeps (button events included) was measured against an older
+        // place.
+        let to = match self.cursor.at(ui.ctx()) {
+            Some(cursor) => Some(cursor - drag.grab),
+            None => {
+                let moved = ui.input(|i| i.events.iter().rev().find_map(|e| if let Event::PointerMoved(p) = e { Some(*p) } else { None }));
+                content.zip(moved.filter(|p| p.is_finite())).map(|((origin, _), local)| origin + (local.to_vec2() - drag.grab))
             }
+        };
+        let mut step = None;
+        if let Some(to) = to.filter(|to| to.distance(drag.to) > 0.0) {
+            (drag.to, step) = (to, Some(to));
+            ui.ctx().data_mut(|d| d.insert_temp(key, drag));
         }
         // The pointer on the desktop is the pressed point of the window where it was last
-        // put, so the origin is that place, less the local pointer.
+        // put (the cursor, where the window system tells it), so the origin is that place,
+        // less the local pointer. Targets are hit there.
         let local = ui.input(|i| i.pointer.latest_pos()).filter(|p| p.is_finite());
         let origin = local.map(|local| drag.to + drag.grab - local.to_vec2()).or(content.map(|(origin, _)| origin));
         let pointer = self.record_pointer(ui.ctx(), Some(window), origin, Some(&drag));

@@ -1,7 +1,7 @@
 //! Floating windows in their own OS windows (feature `native-windows`), drawn by the driver's
 //! stand-in for OS windows.
 
-use egui::{Color32, Event, Key, Modifiers, PointerButton, Pos2, Rect, ViewportCommand, epaint::ClippedShape, pos2, vec2};
+use egui::{Color32, Event, Key, Modifiers, PointerButton, Pos2, Rect, Vec2, ViewportCommand, epaint::ClippedShape, pos2, vec2};
 
 use super::render::{
     APPKIT_CORNER, DragPointer, MACOS_CLOSE, WindowDrag, appkit_resize_areas, close_rects, drag_opacity, floats_shown, resize_bands, wayland,
@@ -1193,6 +1193,45 @@ fn a_bar_drag_follows_the_pointer_when_moves_land_late() {
     let to = pointer - grab.to_vec2();
     assert_eq!(d.host().windows[&viewport].rect.min, to);
     assert_eq!(window(&d, 5).native.map(|r| [r[0], r[1]]), Some([to.x, to.y]));
+}
+
+/// A bar drag at a steady pointer speed under AppKit's timing: the window's reported place is
+/// fresh, while pointer events are measured against where the window was a frame back on some
+/// frames. Returns the window's step each frame. Released, the layout keeps where it ended.
+fn bar_drag_with_stale_pointer(tells_cursor: bool) -> Vec<Vec2> {
+    let mut d = driver(layout(true));
+    d.host().tells_cursor = tells_cursor;
+    d.host().stale = vec![1, 0, 1, 1, 0];
+    let id = id_of(&d);
+    let viewport = d.viewport(id);
+    let grab = pos2(40.0, 9.0);
+    let mut pointer = d.host().windows[&viewport].rect.min + grab.to_vec2();
+    d.window_step(id, vec![Event::PointerMoved(grab), button(grab, true)]);
+    let mut place = d.host().windows[&viewport].rect.min;
+    let mut steps = Vec::new();
+    // On to the desktop right of the main window, where the release docks nothing.
+    for _ in 0..24 {
+        pointer += vec2(20.0, 5.0);
+        d.window_pointer(id, pointer);
+        let now = d.host().windows[&viewport].rect.min;
+        steps.push(now - place);
+        place = now;
+    }
+    let local = pointer - place.to_vec2();
+    d.window_step(id, vec![button(local, false)]);
+    d.settle();
+    assert_eq!(window(&d, 5).native.map(|r| pos2(r[0], r[1])), Some(d.host().windows[&viewport].rect.min));
+    steps
+}
+
+#[test]
+fn a_bar_drag_follows_the_cursor_where_pointer_events_trail_the_window() {
+    // Without the cursor the window overshoots and steps back.
+    let steps = bar_drag_with_stale_pointer(false);
+    assert!(steps.iter().any(|s| s.x < 0.0), "{steps:?}");
+    // With it, every frame moves the window by the pointer's step.
+    let steps = bar_drag_with_stale_pointer(true);
+    assert!(steps.iter().all(|s| *s == vec2(20.0, 5.0)), "{steps:?}");
 }
 
 #[test]
