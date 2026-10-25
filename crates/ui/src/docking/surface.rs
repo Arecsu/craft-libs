@@ -1,4 +1,4 @@
-use std::{fmt::Debug, hash::Hash};
+use std::{collections::HashMap, fmt::Debug, hash::Hash};
 
 use egui::{Color32, Context, FontId, Id, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
@@ -1201,6 +1201,7 @@ impl<'a, P: Clone + Eq + Hash + Debug + Send + Sync + 'static> DockArea<'a, P> {
             targets: Vec::new(),
             dock_targets: Vec::new(),
             dock_groups: Vec::new(),
+            column_scroll: HashMap::new(),
             owned_interactions: Vec::new(),
             output: DockOutput::default(),
             frame,

@@ -350,6 +350,31 @@ fn a_group_edge_scrolled_out_of_view_previews_its_line_at_the_views_edge() {
 }
 
 #[test]
+fn in_a_scrolled_column_a_stack_previews_the_rect_at_the_scroll_offset() {
+    // Groups 306 pt high from y = 14: group 3 spans 320..626 before scrolling.
+    let layout = with_floating(docked(Side::Start, &[&[&[2], &[3], &[4]]]), &[(5, [400.0, 300.0, 150.0, 150.0])]);
+    let mut d = Driver::with(layout, TestContent { min_height: 280.0 }, false);
+    let over = d.tab(2).center();
+    d.step(vec![
+        Event::PointerMoved(over),
+        Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, -200.0), phase: egui::TouchPhase::Move, modifiers: Modifiers::NONE },
+    ]);
+    d.wait();
+    let group = d.tab(3);
+    assert!(group.top() < 250.0, "scrolled up: {group:?}");
+    // Group 3's top third stacks 5 above it, where 3 is now.
+    let at = pos2(120.0, group.bottom() + 40.0);
+    d.hold(bar(&d, 5), at);
+    let held = d.shapes.clone();
+    d.step(vec![button(at, false)]);
+    assert_eq!(columns(&d.layout, Side::Start), vec![vec![vec![2], vec![5], vec![3], vec![4]]]);
+    d.settle();
+    let rect = d.group_rect(5, Some(3), 2);
+    d.shapes = held;
+    assert!(d.previewed(rect), "the rect group 5 takes, {rect:?}");
+}
+
+#[test]
 fn a_stripless_dock_groups_top_third_stacks_above_it() {
     // Canvas 9 in the middle; protected panel 0 alone in the lower group draws no tab strip, so
     // its body is 307..600.

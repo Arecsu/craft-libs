@@ -466,7 +466,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             let mut child =
                 ui.new_child(UiBuilder::new().id_salt(("dock-column", first)).max_rect(body).layout(egui::Layout::top_down(egui::Align::Min)));
             child.set_clip_rect(body.intersect(ui.clip_rect()));
-            egui::ScrollArea::vertical()
+            let scrolled = egui::ScrollArea::vertical()
                 .id_salt(self.id.with(("column-scroll", first)))
                 .auto_shrink([false, false])
                 .scroll_source(egui::scroll_area::ScrollSource::SCROLL_BAR | egui::scroll_area::ScrollSource::MOUSE_WHEEL)
@@ -474,6 +474,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
                     let (content, _) = ui.allocate_exact_size(vec2(ui.available_width(), total), Sense::hover());
                     self.column_groups(ui, column, &heights, content, body);
                 });
+            self.column_scroll.insert(first.clone(), scrolled.state.offset.y);
         } else {
             self.column_groups(ui, column, &heights, body, body);
         }

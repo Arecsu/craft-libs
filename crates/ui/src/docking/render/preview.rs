@@ -611,8 +611,8 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
     /// Where `members` are drawn once `action` is applied, laid out by the code that draws the
     /// layout: the union of the rects of the groups that hold them, or the rect of the dock
     /// column they make up alone. A floating window's tree is laid out in its body as drawn
-    /// this frame. In a dock column that scrolls, a group's rect is clipped to the column's
-    /// body. `None` when the model rejects `action`, or when the members join an iconic column,
+    /// this frame. In a dock column that scrolls, a group's rect sits at the column's scroll
+    /// offset this frame and is clipped to the column's body. `None` when the model rejects `action`, or when the members join an iconic column,
     /// whose icons show no rect.
     pub(super) fn result_rect(&self, action: Action<P>, members: &[P]) -> Option<Rect> {
         let mut candidate = self.layout.clone();
@@ -640,7 +640,11 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
                         return None;
                     }
                     let (_, body, heights) = self.column_layout(column, rect);
-                    let groups = column.groups.iter().zip(super::dock::stacked(body, &heights));
+                    // The column keeps the scroll state of its first panel, as drawn.
+                    let overflow = (heights.iter().sum::<f32>() - body.height()).max(0.0);
+                    let scroll = column.groups.first().and_then(|g| g.panels.first()).and_then(|p| self.column_scroll.get(p));
+                    let area = body.translate(vec2(0.0, -scroll.copied().unwrap_or(0.0).min(overflow)));
+                    let groups = column.groups.iter().zip(super::dock::stacked(area, &heights));
                     rects.extend(groups.filter(|(g, _)| moved(&g.panels)).map(|(_, rect)| rect.intersect(body)));
                 }
             }
