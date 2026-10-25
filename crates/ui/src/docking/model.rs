@@ -1,7 +1,8 @@
 use std::{collections::HashSet, fmt, hash::Hash};
 
 use super::dock_model::{
-    Column, ColumnLocation, Group, GroupLocation, Moving, PanelState, Place, Side, Target, Unit, node_at, split_frame, tree_panels, valid_column,
+    Column, ColumnLocation, Group, GroupLocation, Moving, PanelState, Place, Side, Target, Unit, node_at, split_frame, split_frame_sized,
+    tree_panels, valid_column,
 };
 use crate::layout::{SplitAxis, SplitSize};
 
@@ -305,6 +306,13 @@ pub enum Placement<P> {
     /// Center inserts after the anchor; sides split the anchor's frame into two halves, and
     /// every other frame keeps its size. Sides apply to `Tabs` and `Stack` nodes only.
     Split(Zone),
+    /// A side [`Placement::Split`] that gives the new frame its own room instead of half the
+    /// anchor's frame: the new split takes `size`, and `outer` replaces the size of the nearest
+    /// enclosing split whose divider runs along the anchor frame's `zone` side, so the frames
+    /// beyond that divider give the room. The renderer offers it beside a frame too small to
+    /// halve. `Center`, and an anchor without such a divider or with a dock beyond it, are
+    /// invalid.
+    SplitSized { zone: Zone, size: SplitSize, outer: SplitSize },
     /// A new group above or below the anchor's group in a dock column. On an anchor in a
     /// floating window, a split of the anchor's group above or below.
     /// `height` is the inserted group's preferred height ([`super::Group::height`]); `None`
@@ -1309,6 +1317,10 @@ impl<P: Clone + Eq + Hash> Layout<P> {
             let new = Node::Tabs { panels: vec![entry.panel], active: 0 };
             return if split_frame(root, &path, new, zone) { Ok(()) } else { Err(DockError::MissingTarget) };
         }
+        if let Placement::SplitSized { zone, size, outer } = placement {
+            let new = Node::Tabs { panels: vec![entry.panel], active: 0 };
+            return if split_frame_sized(root, &path, new, zone, size, outer) { Ok(()) } else { Err(DockError::InvalidPlacement) };
+        }
         if insert_node(root, &entry, anchor, &placement) { Ok(()) } else { Err(DockError::MissingTarget) }
     }
 }
@@ -1318,7 +1330,7 @@ impl<P: Clone + Eq + Hash> Layout<P> {
 fn placement_allowed<P>(placement: &Placement<P>, anchor: Permissions) -> bool {
     match placement {
         Placement::Tab { .. } | Placement::Split(Zone::Center) => anchor.accepts_tabs,
-        Placement::Split(_) => anchor.accepts_splits,
+        Placement::Split(_) | Placement::SplitSized { .. } => anchor.accepts_splits,
         _ => true,
     }
 }

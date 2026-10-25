@@ -85,7 +85,9 @@ layout.apply(Action::Move {
   that side or a new group above or below in a dock. A floating window takes splits as the
   docked layout does; `Placement::Group` on a floating anchor splits its group above or below.
 - A side split zone puts what moves in a new half-size split of the anchor's frame, and no
-  other frame changes size. The new split has its own divider.
+  other frame changes size. The new split has its own divider. `Placement::SplitSized` sizes
+  that split instead (`size`) and resizes the enclosing split whose divider runs along the
+  anchor frame's side (`outer`), so the frames beyond that divider give the new frame its room.
 - Other actions select, minimize, collapse to icons, resize splits (`ResizeSplit` in the docked
   layout, `ResizeWindowSplit` in the floating window holding a panel), columns and groups, and
   move a floating window to its own OS window (`SetNative`, and `SetMonitor` for the monitor it
@@ -242,8 +244,11 @@ A flyout fits its content the same way, without the title bar.
 - Beside a frame is a split of that frame. Beside a group in a dock column, the top and bottom
   stack a new group above or below it, and the left and right make a new column on that side.
 - A frame too narrow or short for two halves of `DockStyle::min_pane` still splits when the
-  frames beyond it can give the room, as they do for a dragged divider. When they cannot, that
-  side joins the frame's tabs instead, or takes nothing when the frame takes no tabs. The gap
+  frames beyond it can give the room, as they do for a dragged divider. When they cannot, the
+  frame keeps its size and the new frame takes the width (or height) the moved panels have now,
+  at least its minimum, from the frames beyond the frame's divider on that side
+  (`Placement::SplitSized`). When those have no room either, that side joins the frame's tabs
+  instead, or takes nothing when the frame takes no tabs. The gap
   between two frames is no target.
 - Bands along borders come before the group zones. Each is centred on its border where the
   pointer can reach both sides:

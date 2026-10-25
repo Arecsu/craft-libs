@@ -432,3 +432,25 @@ fn a_header_drag_in_a_window_of_two_groups_still_offers_the_other_group() {
         out.actions
     );
 }
+
+#[test]
+fn a_drop_beside_a_frame_too_narrow_to_halve_takes_room_from_its_neighbour() {
+    // Frame 2 is 60 pt wide beside frame 1; group 4 floats over frame 1.
+    let root =
+        Node::Split { axis: SplitAxis::Horizontal, size: SplitSize::FixedSecond(60.0), first: Box::new(tabs(&[1])), second: Box::new(tabs(&[2])) };
+    let layout = Layout { root: Some(root), floating: vec![Floating::single(vec![4], 0, [100.0, 100.0, 200.0, 200.0])] };
+    let mut d = DockDriver::new(layout, Bodies::default());
+    let (body, rect) = group(&d, 2);
+    let at = pos2(body.left() + 8.0, body.center().y);
+    d.hold(tab(&d, 4), at);
+    assert!(d.filled(line(rect, Zone::Left)), "a line along frame 2's left edge");
+    let out = d.release(at);
+    assert!(
+        matches!(&out.actions[..], [Action::Move { panel: 4, anchor: 2, placement: Placement::SplitSized { zone: Zone::Left, .. } }]),
+        "{:?}",
+        out.actions
+    );
+    d.settle();
+    assert!((group(&d, 2).1.width() - rect.width()).abs() < 1.0, "frame 2 keeps its width");
+    assert!(group(&d, 4).1.width() >= 40.0);
+}

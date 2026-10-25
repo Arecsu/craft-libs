@@ -10,7 +10,7 @@ use crate::docking::{
     surface::TAB_PADDING,
     targets::{SIDE_EDGE_ZONE_DEPTH, resolve_drop_on},
 };
-use crate::layout::SplitAxis;
+use crate::layout::{SplitAxis, SplitSize};
 
 /// Ctrl (Windows, Linux) or Cmd (macOS) held: the drop floats and no target is offered.
 fn float_only(ctx: &Context) -> bool {
@@ -182,7 +182,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         let (edges, joins) = (false, false);
         let split = match proposal.placement {
             Placement::Split(Zone::Center) => !joins,
-            Placement::Split(_) => !edges,
+            Placement::Split(_) | Placement::SplitSized { .. } => !edges,
             _ => false,
         };
         if window && !into_window && split {
@@ -209,6 +209,11 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         if self.leaves_room(action(Target::At { anchor: proposal.anchor.clone(), placement: proposal.placement.clone() })) {
             return Some(self.settled(proposal, action));
         }
+        if let Some(placement) = self.sized_split(panel, &proposal, &action)
+            && self.leaves_room(action(Target::At { anchor: proposal.anchor.clone(), placement: placement.clone() }))
+        {
+            return Some(self.settled(DropProposal { placement, ..proposal }, action));
+        }
         let target = targets.iter().rev().find(|t| crate::docking::targets::usable(t.rect) && t.rect.contains(pointer))?;
         let proposal = resolve_drop_on(
             panel,
@@ -218,6 +223,83 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             self.style.drop_sides(),
         )?;
         Some(self.settled(proposal, action))
+    }
+
+    /// The side split of `proposal`'s frame when halving it leaves no room
+    /// ([`Placement::SplitSized`]): the frame keeps its size, the new frame takes the size the
+    /// moved panels have now (at least its minimum and [`DROP_MARGIN`]), and the frames beyond
+    /// the divider on that side give the room. `None` without such a divider, or when those
+    /// frames cannot give the new frame its minimum.
+    fn sized_split(&self, panel: &P, proposal: &DropProposal<P>, action: &impl Fn(Target<P>) -> Action<P>) -> Option<Placement<P>> {
+        let Placement::Split(zone) = proposal.placement else { return None };
+        let axis = if matches!(zone, Zone::Top | Zone::Bottom) { SplitAxis::Vertical } else { SplitAxis::Horizontal };
+        let along = |v: Vec2| if axis == SplitAxis::Horizontal { v.x } else { v.y };
+        // The divider on the frame's start side (left or top) belongs to a split holding the
+        // frame in its second child, as `split_frame_sized` finds it.
+        let start = matches!(zone, Zone::Left | Zone::Top);
+        let anchor = &proposal.anchor;
+        let now = self.drawn_groups(self.layout);
+        let frame = along(now.iter().find(|(node, _)| holds(node, anchor))?.1.size());
+        let mut candidate = self.layout.clone();
+        let halves = action(Target::At { anchor: anchor.clone(), placement: proposal.placement.clone() });
+        candidate.apply_with_permissions(halves, |p| self.permissions(p)).ok()?;
+        let (root, area, path) = match candidate.place(anchor)? {
+            Place::Node(path) => (candidate.root.as_ref()?, self.workspace, path),
+            Place::Floating { window, path } => {
+                let window = candidate.floating.get(window)?;
+                (&window.root, self.window_body(window), path)
+            }
+            Place::Dock { .. } => return None,
+        };
+        // The splits from the root down to the new one, as drawn with halves.
+        let sizer = self.sizer();
+        let (_, split_path) = path.split_last()?;
+        let mut chain = vec![(root, area)];
+        for &second in split_path {
+            let &(node, rect) = chain.last()?;
+            let [a, b] = sizer.children(node, rect)?;
+            chain.push(if second { b } else { a });
+        }
+        let &(Node::Split { first, second, .. }, halved) = chain.last()? else { return None };
+        let new = if start { first } else { second };
+        let depth = (0..split_path.len()).rev().find(|&d| {
+            split_path.get(d) == Some(&start) && chain.get(d).is_some_and(|(n, _)| matches!(n, Node::Split { axis: own, .. } if *own == axis))
+        })?;
+        let &(outer, outer_rect) = chain.get(depth)?;
+        let Node::Split { size: outer_size, first: a, second: b, .. } = outer else { return None };
+        if matches!(**a, Node::Dock { .. }) || matches!(**b, Node::Dock { .. }) {
+            return None;
+        }
+        let [a, b] = sizer.children(outer, outer_rect)?;
+        let far = if start { a } else { b };
+        // The far side's edge at the divider is its end edge when the divider is on the start
+        // side of the frame.
+        let room = sizer.travel(far.0, far.1, axis, start).0 - DROP_MARGIN;
+        let least = along(super::node_limits(new, self.style, &*self.content).min) + DROP_MARGIN;
+        let gap = self.style.gap;
+        let wanted = now.iter().find(|(node, _)| holds(node, panel)).map_or(least, |(_, rect)| along(rect.size()));
+        let size = wanted.max(least).min(along(halved.size()) + room - frame - gap);
+        if size < least {
+            return None;
+        }
+        // The anchor's side of the outer split grows by what the halves did not take already.
+        let grow = frame + gap + size - along(halved.size());
+        let first = along(a.1.size()) + if start { -grow } else { grow };
+        let outer = super::sizes::resized(*outer_size, first, along(a.1.size()) + along(b.1.size()))?;
+        let size = super::sizes::resized(SplitSize::Ratio(0.5), if start { size } else { frame }, frame + size)?;
+        Some(Placement::SplitSized { zone, size, outer })
+    }
+
+    /// Every group of `layout`'s trees as drawn, with its rect.
+    fn drawn_groups<'l>(&self, layout: &'l Layout<P>) -> Vec<(&'l Node<P>, Rect)> {
+        let sizer = self.sizer();
+        let mut out = Vec::new();
+        for (root, area) in self.trees(layout) {
+            let mut drawn = Vec::new();
+            sizer.groups(root, area, &mut drawn);
+            out.extend(drawn.into_iter().map(|d| (d.node, d.rect)));
+        }
+        out
     }
 
     /// `proposal`, marked a no-op when `action` at it would leave every panel where it is,
@@ -345,7 +427,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             if zones {
                 self.paint_marker(&painter, &proposal);
             } else {
-                let split = matches!(proposal.placement, Placement::Split(zone) | Placement::Edge(zone) if zone != Zone::Center);
+                let split = matches!(proposal.placement, Placement::Split(zone) | Placement::SplitSized { zone, .. } | Placement::Edge(zone) if zone != Zone::Center);
                 self.paint_preview(ctx, &painter, &proposal, split);
             }
             if drag.gesture != GroupGesture::Window {
@@ -485,7 +567,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
     /// region the drop takes, filled for a tab drag (`filled`) or a split.
     fn paint_preview(&self, ctx: &Context, painter: &egui::Painter, proposal: &DropProposal<P>, filled: bool) {
         if crate::docking::targets::usable(proposal.preview) {
-            let beside = matches!(proposal.placement, Placement::Split(zone) | Placement::Edge(zone) if zone != Zone::Center);
+            let beside = matches!(proposal.placement, Placement::Split(zone) | Placement::SplitSized { zone, .. } | Placement::Edge(zone) if zone != Zone::Center);
             if self.style.side_edge_zones {
                 drop_preview(painter, proposal.preview.shrink(1.0), self.style.accent, filled);
             } else if beside {
@@ -551,7 +633,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         use crate::docking::targets::{header_height, usable, zone_shape};
         let zone_of = |proposal: &DropProposal<P>| match proposal.placement {
             _ if proposal.noop => None,
-            Placement::Split(zone) => Some(zone),
+            Placement::Split(zone) | Placement::SplitSized { zone, .. } => Some(zone),
             Placement::Tab { .. } => Some(Zone::Center),
             _ => None,
         };
@@ -712,6 +794,15 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             }
         }
         true
+    }
+}
+
+/// Whether the drawn group `node` holds `panel`.
+fn holds<P: PartialEq>(node: &Node<P>, panel: &P) -> bool {
+    match node {
+        Node::Tabs { panels, .. } => panels.contains(panel),
+        Node::Stack { entries } => entries.iter().any(|e| &e.panel == panel),
+        Node::Split { .. } | Node::Dock { .. } => false,
     }
 }
 

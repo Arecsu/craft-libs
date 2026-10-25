@@ -326,6 +326,35 @@ pub(super) fn split_frame<P>(root: &mut Node<P>, path: &[bool], new: Node<P>, zo
     true
 }
 
+/// [`split_frame`] with the sizes of [`Placement::SplitSized`]: the new split takes `size`, and
+/// the nearest enclosing split whose divider runs along the frame's `zone` side takes `outer`.
+/// False when there is no such split, or a dock is beyond it.
+pub(super) fn split_frame_sized<P>(root: &mut Node<P>, path: &[bool], new: Node<P>, zone: Zone, size: SplitSize, outer: SplitSize) -> bool {
+    let axis = if matches!(zone, Zone::Top | Zone::Bottom) { SplitAxis::Vertical } else { SplitAxis::Horizontal };
+    // A divider on the frame's start side (left or top) belongs to a split holding the frame
+    // in its second child.
+    let start = matches!(zone, Zone::Left | Zone::Top);
+    let enclosing = (0..path.len()).rev().find(|&depth| {
+        path.get(depth) == Some(&start) && matches!(node_at(root, &path[..depth]), Some(Node::Split { axis: own, .. }) if *own == axis)
+    });
+    let Some(depth) = enclosing else { return false };
+    let Some(Node::Split { size: own, first, second, .. }) = node_at_mut(root, &path[..depth]) else { return false };
+    if zone == Zone::Center || matches!(**first, Node::Dock { .. }) || matches!(**second, Node::Dock { .. }) {
+        return false;
+    }
+    *own = outer;
+    if !split_frame(root, path, new, zone) {
+        return false;
+    }
+    match node_at_mut(root, path) {
+        Some(Node::Split { size: own, .. }) => {
+            *own = size;
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Insert `new` at `index` and select the member at `index + selected`.
 fn splice<P>(panels: &mut Vec<P>, active: &mut usize, index: usize, new: Vec<P>, selected: usize) {
     let index = index.min(panels.len());
@@ -798,6 +827,18 @@ impl<P: Clone + Eq + Hash> Layout<P> {
                         };
                         let root = self.tree_mut(window).ok_or(DockError::MissingTarget)?;
                         if split_frame(root, path, new, zone) { Ok(()) } else { Err(DockError::MissingTarget) }
+                    }
+                    Placement::SplitSized { zone, size, outer } => {
+                        let (window, path) = place.tree_path().ok_or(DockError::InvalidPlacement)?;
+                        let new = match moving.node {
+                            Some(node) => node,
+                            None => {
+                                let (panels, active) = flatten(moving.groups);
+                                Node::Tabs { panels, active }
+                            }
+                        };
+                        let root = self.tree_mut(window).ok_or(DockError::MissingTarget)?;
+                        if split_frame_sized(root, path, new, zone, size, outer) { Ok(()) } else { Err(DockError::InvalidPlacement) }
                     }
                     // A floating window is a tree: a group above or below splits the anchor's group.
                     Placement::Group { below, .. } if matches!(place, Place::Floating { .. }) => {
