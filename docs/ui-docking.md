@@ -249,6 +249,9 @@ A flyout fits its content the same way, without the title bar.
     keeps its sides.
 - Beside a frame is a split of that frame. Beside a group in a dock column, the top and bottom
   stack a new group above or below it, and the left and right make a new column on that side.
+  A group dragged to an edge of its own column, such as the window edge of the column it heads,
+  makes a new column there, as one of its tabs would; when it is the column's only group,
+  nothing changes.
 - A frame too narrow or short for two halves of `DockStyle::min_pane` still splits when the
   frames beyond it can give the room, as they do for a dragged divider. When they cannot, the
   frame keeps its size and the new frame takes the width (or height) the moved panels have now,
@@ -322,15 +325,18 @@ A flyout fits its content the same way, without the title bar.
   way. Towards the minimums, groups give way in proportion to their room. A group takes the
   largest default, compact and fill height of its panels. All three are body heights, without
   the tab strip, like `PanelLimits`.
-- Drop previews have three shapes, the same for tab and group drags:
+- Drop previews have four shapes, the same for tab and group drags:
   - A drop beside something shows the rect the dragged panel, group or column will take, at its
     real position and size, as a 2 pt accent outline with a light fill. The renderer applies
     the drop to a copy of the layout and lays it out with the code that draws it, so the rect
     is the one the panel's group gets on release: the new frame for a split (including
-    `Placement::SplitSized`) or the outer edge band, the new group for a stack above or below
-    a dock group or on a seam, and the whole column, bar included, for a new column or dock.
-    A drop between the icon groups of an iconic column shows a `DockStyle::drop_line_width`
-    (4 pt) accent line there instead.
+    `Placement::SplitSized`), the new group for a stack above or below a dock group or on a
+    seam, and the whole column, bar included, for a new column between columns or beside a
+    dock group's side.
+  - A drop on a band along the layout's outer edge shows a `DockStyle::drop_line_width` (4 pt)
+    accent line along that edge: the new-dock band, the window edge of a dock's outermost
+    column, and the outer edge band (`Placement::Edge`), whose line spans the edge area it
+    wraps. A drop between the icon groups of an iconic column shows the same line there.
   - A drop that joins a group shows the same outline and fill around the whole group, and on
     its strip the 2 pt insertion marker.
   - A drop that floats shows the floating rect.

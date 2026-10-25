@@ -357,12 +357,15 @@ pub(super) fn resolve_drop_on<P: Clone + Eq>(
 }
 
 /// [D] A dock drop target, built once per frame next to the [`DropTarget`]s. The pointer selects
-/// it inside `band`; the preview is the line `line`.
+/// it inside `band`; `line` is the edge it docks to.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct DockDrop<P> {
     pub(super) target: DockTarget<P>,
     pub(super) band: Rect,
     pub(super) line: Rect,
+    /// A band along the window edge: a new dock, or a new column outside the outermost one.
+    /// Its preview is `line`, not the rect the drop takes.
+    pub(super) outer: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

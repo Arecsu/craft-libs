@@ -165,17 +165,18 @@ fn a_side_without_room_joins_as_a_tab_or_offers_nothing() {
 }
 
 #[test]
-fn the_root_edge_band_is_28_pt_and_previews_the_new_frame_along_the_layouts_edge() {
+fn the_root_edge_band_is_28_pt_and_previews_a_line_along_the_layouts_edge() {
     let d = driver(&[]);
     let (body, _) = group(&d, 1);
     let x = body.center().x;
-    let along_the_bottom = |d: &Driver| {
-        let (_, rect) = group(d, 3);
-        assert_eq!((rect.left(), rect.right(), rect.bottom()), (0.0, 800.0, 600.0), "along the layout's whole bottom edge");
-        rect
-    };
-    let out = previews_result(driver(&[]), tab(&d, 3), pos2(x, 573.0), along_the_bottom);
+    let window = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+    let out = previews_line(driver(&[]), tab(&d, 3), pos2(x, 573.0), line(window, Zone::Bottom));
     assert!(matches!(&out[..], [Action::Move { panel: 3, placement: Placement::Edge(Zone::Bottom), .. }]), "{out:?}");
+    let mut d = driver(&[]);
+    d.drag(tab(&d, 3), pos2(x, 573.0));
+    d.settle();
+    let (_, rect) = group(&d, 3);
+    assert_eq!((rect.left(), rect.right(), rect.bottom()), (0.0, 800.0, 600.0), "along the layout's whole bottom edge");
     // Past the band, the group's own bottom third.
     let mut d = driver(&[]);
     let out = d.drag(tab(&d, 3), pos2(x, 571.0));
@@ -218,12 +219,8 @@ fn between_side_frames_the_outer_edge_band_covers_only_the_canvas_column() {
     let (side, _) = group(&d, 1);
     let at = pos2(canvas.center().x, 590.0);
     let mut d = canvas_driver(Permissions::PROTECTED, |_| {});
-    let under_the_canvas = |d: &Driver| {
-        let (_, rect) = group(d, 3);
-        assert_eq!(rect.x_range(), canvas.x_range(), "the canvas column's width");
-        rect
-    };
-    let out = previews_result(canvas_driver(Permissions::PROTECTED, |_| {}), tab(&d, 3), at, under_the_canvas);
+    // The line along the canvas column's bottom.
+    let out = previews_line(canvas_driver(Permissions::PROTECTED, |_| {}), tab(&d, 3), at, line(canvas, Zone::Bottom));
     assert_eq!(out, vec![Action::Move { panel: 3, anchor: 0, placement: Placement::Edge(Zone::Bottom) }]);
     d.drag(tab(&d, 3), at);
     // The side frames keep their full height.
@@ -249,12 +246,8 @@ fn between_docks_the_outer_edge_band_covers_the_part_between_them() {
     let (timeline, _) = group(&d, 4);
     let area = Rect::from_x_y_ranges(canvas.x_range(), (canvas.top() - 26.0)..=timeline.bottom());
     let at = pos2(canvas.center().x, 590.0);
-    let between_the_docks = |d: &Driver| {
-        let (_, rect) = group(d, 3);
-        assert_eq!((rect.x_range(), rect.bottom()), (area.x_range(), area.bottom()), "along the bottom between the docks");
-        rect
-    };
-    let out = previews_result(driver(), tab(&d, 3), at, between_the_docks);
+    // The line along the bottom between the docks.
+    let out = previews_line(driver(), tab(&d, 3), at, line(area, Zone::Bottom));
     assert!(matches!(&out[..], [Action::Move { panel: 3, placement: Placement::Edge(Zone::Bottom), .. }]), "{out:?}");
     let mut d = driver();
     d.drag(tab(&d, 3), at);
@@ -281,15 +274,12 @@ fn over_a_full_width_row_the_top_edge_band_covers_only_the_canvas_column_above_i
     let d = driver();
     let (canvas, _) = group(&d, 0);
     let at = pos2(canvas.center().x, 5.0);
+    // The line along the canvas column's top, not the window's.
+    let out = previews_line(driver(), tab(&d, 3), at, line(canvas, Zone::Top));
+    assert_eq!(out, vec![Action::Move { panel: 3, anchor: 0, placement: Placement::Edge(Zone::Top) }]);
     let mut d = driver();
-    d.hold(tab(&d, 3), at);
-    let preview = result_preview(&d).unwrap_or_else(|| panic!("no result preview"));
-    assert_eq!(preview.x_range(), canvas.shrink(1.0).x_range(), "the canvas column's width, not the window's");
-    let out = d.release(at);
-    d.settle();
-    assert_eq!(out.actions, vec![Action::Move { panel: 3, anchor: 0, placement: Placement::Edge(Zone::Top) }]);
+    d.drag(tab(&d, 3), at);
     assert_eq!(wrapped(&d.layout, 3), Some(tabs(&[0])), "{:?}", d.layout);
-    assert_eq!(preview, group(&d, 3).1.shrink(1.0));
 }
 
 #[test]
@@ -305,8 +295,8 @@ fn an_outer_edge_drop_wraps_the_area_it_previews_when_the_app_applies_other_perm
     let at = pos2(canvas.center().x, 5.0);
     let mut d = driver();
     d.hold(tab(&d, 3), at);
-    let preview = result_preview(&d).unwrap_or_else(|| panic!("no result preview"));
-    assert_eq!(preview.x_range(), Rect::from_x_y_ranges(0.0..=800.0, 0.0..=1.0).shrink2(egui::vec2(1.0, 0.0)).x_range(), "the window's width");
+    assert!(d.filled(line(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0)), Zone::Top)), "the line along the window's top");
+    assert_eq!(result_preview(&d), None);
     let out = d.release(at);
     let mut applied = layout.clone();
     let apply = |p: &u32| if *p == 0 { Permissions::PROTECTED } else { Permissions::default() };
@@ -528,6 +518,17 @@ fn result_preview(d: &Driver) -> Option<Rect> {
         .filter(|rect| d.outlined(*rect))
 }
 
+/// Drags `from` to `at` and releases: the preview while held is the drop line `line`, with no
+/// result rect. Returns the drop's actions.
+fn previews_line(mut d: Driver, from: Pos2, at: Pos2, line: Rect) -> Vec<Action<u32>> {
+    d.hold(from, at);
+    assert!(d.filled(line), "the line {line:?}");
+    assert_eq!(result_preview(&d), None);
+    let out = d.release(at);
+    d.settle();
+    out.actions
+}
+
 /// Drags `from` to `at` and back to rest: the preview while held is the rect `rect_of` reads
 /// once the drop is applied, inset by its 1 pt margin. Returns the drop's actions.
 fn previews_result(mut d: Driver, from: Pos2, at: Pos2, rect_of: impl Fn(&Driver) -> Rect) -> Vec<Action<u32>> {
@@ -579,7 +580,8 @@ fn a_dock_drop_previews_the_rect_the_group_or_column_takes() {
     // The column's inner edge: a new column after it, the full height.
     let out = previews_result(dock_driver(), tab(&d, 4), pos2(upper.right() + 6.0, 200.0), |d| column_of(d, 4));
     assert_eq!(out, vec![Action::Move { panel: 4, anchor: 2, placement: Placement::Column { after: true } }]);
-    // The window's right edge: a new dock.
-    let out = previews_result(dock_driver(), tab(&d, 4), pos2(795.0, 200.0), |d| column_of(d, 4));
+    // The window's right edge: a new dock, previewed by the line along that edge.
+    let window = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+    let out = previews_line(dock_driver(), tab(&d, 4), pos2(795.0, 200.0), line(window, Zone::Right));
     assert_eq!(out, vec![Action::MovePanel { panel: 4, to: Target::NewDock { side: Side::End } }]);
 }
