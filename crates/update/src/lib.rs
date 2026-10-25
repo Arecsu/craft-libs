@@ -29,6 +29,8 @@ pub mod version;
 
 #[cfg(feature = "egui")]
 pub mod dialog;
+#[cfg(feature = "egui")]
+pub mod updater;
 
 pub use app::App;
 pub use http::{Http, Stop};
