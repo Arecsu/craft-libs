@@ -328,8 +328,9 @@ pub enum Placement<P> {
     /// root is split, or in a layout with docks, the part between them. The anchor names any
     /// docked panel. A protected anchor ([`Permissions::is_protected`], applied through
     /// [`Layout::apply_with_permissions`]) narrows the part to the canvas column: where neither
-    /// side of a side-by-side split is a dock and only one holds a protected panel, that side.
-    /// `Center` is invalid.
+    /// side of a side-by-side split is a dock and only one holds a protected panel, that side;
+    /// for `Top` (`Bottom`), also the first (last) row of a split of rows when only that row
+    /// holds one. `Center` is invalid.
     Edge(Zone),
 }
 

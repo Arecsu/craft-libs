@@ -263,6 +263,56 @@ fn between_docks_the_outer_edge_band_covers_the_part_between_them() {
     assert_eq!(**first, split(SplitAxis::Vertical, SplitSize::Ratio(0.75), middle, tabs(&[3])));
 }
 
+/// The frame beside `panel`'s own: what an edge split with `panel` wrapped.
+fn wrapped(layout: &Layout<u32>, panel: u32) -> Option<Node<u32>> {
+    let Some(dock_model::Place::Node(path)) = layout.place(&panel) else { return None };
+    let (last, parent) = path.split_last()?;
+    layout.root.as_ref().and_then(|root| dock_model::node_at(root, &[parent, &[!last]].concat())).cloned()
+}
+
+#[test]
+fn over_a_full_width_row_the_top_edge_band_covers_only_the_canvas_column_above_it() {
+    // SoundCraft's Edit window: side frame 1, canvas 0 and side frame [2, 3] over a full-width
+    // editor 4.
+    let Some(upper) = canvas_columns().root else { panic!() };
+    let root = split(SplitAxis::Vertical, SplitSize::Ratio(0.7), upper.clone(), tabs(&[4]));
+    let layout = Layout { root: Some(root), floating: Vec::new() };
+    let driver = || DockDriver::new(layout.clone(), Bodies { rules: [(0, Permissions::PROTECTED)].into(), ..Bodies::default() });
+    let d = driver();
+    let (canvas, _) = group(&d, 0);
+    let at = pos2(canvas.center().x, 5.0);
+    let mut d = driver();
+    d.hold(tab(&d, 3), at);
+    assert!(d.filled(Rect::from_x_y_ranges(canvas.x_range(), 0.0..=4.0)), "a line along the canvas column's top");
+    assert!(!d.filled(Rect::from_x_y_ranges(0.0..=800.0, 0.0..=4.0)), "no line along the window's top");
+    let out = d.release(at);
+    assert_eq!(out.actions, vec![Action::Move { panel: 3, anchor: 0, placement: Placement::Edge(Zone::Top) }]);
+    assert_eq!(wrapped(&d.layout, 3), Some(tabs(&[0])), "{:?}", d.layout);
+}
+
+#[test]
+fn an_outer_edge_drop_wraps_the_area_it_previews_when_the_app_applies_other_permissions() {
+    // Frame [2, 3] and canvas 0 beside frame 1, which is protected only while drawing (PDFCraft's
+    // bare tools mode): drawn, the edge band is not narrowed to the canvas.
+    let inner = split(SplitAxis::Horizontal, SplitSize::Ratio(0.5), Node::Tabs { panels: vec![2, 3], active: 1 }, tabs(&[0]));
+    let layout = Layout { root: Some(split(SplitAxis::Horizontal, SplitSize::Ratio(0.7), inner, tabs(&[1]))), floating: Vec::new() };
+    let drawn = [(0, Permissions::PROTECTED), (1, Permissions::PROTECTED)];
+    let driver = || DockDriver::new(layout.clone(), Bodies { rules: drawn.into(), ..Bodies::default() });
+    let d = driver();
+    let (canvas, _) = group(&d, 0);
+    let at = pos2(canvas.center().x, 5.0);
+    let mut d = driver();
+    d.hold(tab(&d, 3), at);
+    assert!(d.filled(Rect::from_x_y_ranges(0.0..=800.0, 0.0..=4.0)), "a line along the window's top");
+    let out = d.release(at);
+    let mut applied = layout.clone();
+    let apply = |p: &u32| if *p == 0 { Permissions::PROTECTED } else { Permissions::default() };
+    applied.apply_all(out.actions.clone(), apply).unwrap_or_else(|e| panic!("{e}: {:?}", out.actions));
+    let mut rest = layout;
+    rest.apply(Action::Close { panel: 3 }).unwrap();
+    assert_eq!(wrapped(&applied, 3), rest.root, "{:?}", out.actions);
+}
+
 #[test]
 fn drop_edges_limit_the_outer_edges_and_the_canvas_sides() {
     let left_right = |style: &mut DockStyle| style.drop_edges = Sides::LEFT_RIGHT;

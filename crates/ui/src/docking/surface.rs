@@ -363,9 +363,9 @@ const FLOAT_INSET: f32 = 24.0;
 #[cfg_attr(not(feature = "serde"), allow(dead_code))]
 pub(super) const DEFAULT_FLOAT: Vec2 = Vec2::new(260.0, 320.0);
 
-/// Where a docking command floats a panel, group or column when it gives no rect (see
-/// `DockCommand::to_actions`, feature `serde`). [`DockArea`] records one each frame; read it
-/// with [`float_space`].
+/// Where a docking command floats a panel, group or column when it gives no rect, and how the
+/// area draws its outer edge (see `DockCommand::to_actions`, feature `serde`). [`DockArea`]
+/// records one each frame; read it with [`float_space`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct FloatSpace<P> {
     /// The rect the area drew in. A floated unit goes inside it, 24 points from its top-left
@@ -378,13 +378,23 @@ pub struct FloatSpace<P> {
     /// The height each panel's content used when it was last drawn, which fits a floated group
     /// to its content; `None` for content that filled its body.
     pub(super) contents: Vec<(P, Option<f32>)>,
+    /// The area draws with [`DockStyle::side_edge_zones`]: an outer edge drop wraps the part
+    /// between the docks, never only the canvas column.
+    pub(super) side_edge_zones: bool,
 }
 
 impl<P: PartialEq> FloatSpace<P> {
     /// An area with no recorded sizes: commands float a panel at 260x320, and a group or
     /// column at its dock column's width (else 260) by 320.
     pub fn new(area: Rect) -> Self {
-        Self { area, panels: Vec::new(), groups: Vec::new(), columns: Vec::new(), contents: Vec::new() }
+        Self { area, panels: Vec::new(), groups: Vec::new(), columns: Vec::new(), contents: Vec::new(), side_edge_zones: false }
+    }
+
+    /// For an area drawn with [`DockStyle::side_edge_zones`] when the area has not drawn yet
+    /// (a headless run): an outer edge command then wraps what that profile's edge band wraps.
+    pub fn with_side_edge_zones(mut self, on: bool) -> Self {
+        self.side_edge_zones = on;
+        self
     }
 
     /// Adds the size a command floats `panel` at alone when the area has not drawn it, such as
@@ -1186,7 +1196,7 @@ impl<'a, P: Clone + Eq + Hash + Debug + Send + Sync + 'static> DockArea<'a, P> {
             output: DockOutput::default(),
             frame,
             iconic: super::render::Iconic::new(self.auto_collapse),
-            float_space: FloatSpace { contents, ..FloatSpace::new(rect) },
+            float_space: FloatSpace { contents, side_edge_zones: style.side_edge_zones, ..FloatSpace::new(rect) },
             places,
             contents: content_index,
             dividers: Vec::new(),
