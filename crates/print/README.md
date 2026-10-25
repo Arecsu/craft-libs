@@ -86,7 +86,12 @@ or changes it is refused; select supported options or flatten grayscale into the
 page content. A driver without the feature, per its PrintCapabilities, is accepted when it can
 only do what was asked: one-sided on a queue with no two-sided feature, grayscale on one with no
 colour option, uncollated copies on one that can't collate. Two-sided on such a queue is
-refused, and so are collated copies: Windows doesn't document collating for such a driver.
+refused. Windows doesn't document collating for a driver that can't collate, so collated copies
+on one are a single job of one copy that holds the document's pages once per copy; on two-sided
+paper an odd page count gets a blank page after each copy but the last, so every copy starts on
+a sheet of its own. Pages with annotations and encrypted PDFs can't be repeated and are refused,
+and so are queues set to print several pages per sheet, to bind, or to a two-sided option outside
+the Print Schema's.
 Without an explicit duplex request, the queue default applies. Without a grayscale request the
 ticket names no colour, so the colour in the user's printing preferences (Properties…, or
 Windows Settings) applies, black and white included. Single-page or single-copy jobs have no

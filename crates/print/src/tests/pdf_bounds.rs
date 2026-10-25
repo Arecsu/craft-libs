@@ -65,7 +65,7 @@ fn reframe_preserves_single_direct_and_indirect_content_streams() {
         for (name, contents) in [("single", "3 0 R"), ("direct-array", "[3 0 R]"), ("indirect-array", "5 0 R")] {
             let original = fixture(contents, compressed, "");
             let sheets = read(&original).unwrap();
-            let updated = sheets.update(&plan(&sheets.sheets, (612.0, 792.0), Fit::Shrink { margin: 18.0 }).unwrap()).unwrap();
+            let updated = sheets.update(&plan(&sheets.sheets, (612.0, 792.0), Fit::Shrink { margin: 18.0 }).unwrap(), None).unwrap();
             let sheets = read(&updated).unwrap();
             let contents = get(&sheets.sheets[0].dict, b"Contents").unwrap().array().unwrap();
             assert_eq!(contents.len(), 3);
@@ -171,7 +171,7 @@ fn reframe_keeps_array_order_and_treats_null_as_an_empty_page() {
     for (contents, expected) in [("[3 0 R 3 0 R]", 4), ("null", 2)] {
         let original = fixture(contents, false, "");
         let sheets = read(&original).unwrap();
-        let updated = sheets.update(&plan(&sheets.sheets, (612.0, 792.0), Fit::Shrink { margin: 0.0 }).unwrap()).unwrap();
+        let updated = sheets.update(&plan(&sheets.sheets, (612.0, 792.0), Fit::Shrink { margin: 0.0 }).unwrap(), None).unwrap();
         let sheets = read(&updated).unwrap();
         let contents = get(&sheets.sheets[0].dict, b"Contents").unwrap().array().unwrap();
         assert_eq!(contents.len(), expected);
@@ -282,4 +282,115 @@ fn an_oversized_inherited_media_box_is_not_copied_for_every_page() {
     let sheets = read(&pdf).unwrap();
     assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
     assert_eq!(sheets.sheets.len(), pages);
+}
+
+/// A classic-xref PDF of these objects, numbered from 1.
+fn classic(objects: &[String]) -> Vec<u8> {
+    let mut pdf = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, object) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = pdf.len();
+    pdf.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f\r\n", objects.len() + 1).as_bytes());
+    for offset in offsets {
+        pdf.extend_from_slice(format!("{offset:010} 00000 n\r\n").as_bytes());
+    }
+    pdf.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).as_bytes());
+    pdf
+}
+
+/// Three Letter pages that inherit their MediaBox and Resources; the third is turned by its own
+/// `/Rotate 90`, and carries `extra` in its dictionary.
+fn three_pages(extra: &str) -> Vec<u8> {
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R /PageMode /UseNone >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 /MediaBox [0 0 612 792] /Resources << /ProcSet [/PDF] >> >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /Contents 6 0 R >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /Contents 7 0 R >>".to_string(),
+        format!("<< /Type /Page /Parent 2 0 R /Contents 8 0 R /Rotate 90 {extra} >>"),
+    ];
+    objects.extend((0..3).map(|_| "<< /Length 0 >>\nstream\n\nendstream".to_string()));
+    classic(&objects)
+}
+
+#[test]
+fn collated_copies_repeat_the_pages_with_a_blank_back_between_odd_copies() {
+    let pdf = three_pages("");
+    let sheets = read(&pdf).unwrap();
+    // The turned page comes back upright in a portrait job, in every copy.
+    let edits = plan(&sheets.sheets, (612.0, 792.0), Fit::Exact).unwrap();
+    let content = |n: u32| Some(Obj::Ref(n, 0));
+    for (two_sided, expected) in [
+        (true, vec![content(6), content(7), content(8), None, content(6), content(7), content(8)]),
+        (false, vec![content(6), content(7), content(8), content(6), content(7), content(8)]),
+    ] {
+        let updated = sheets.update(&edits, Some(Repeat { copies: 2, two_sided })).unwrap();
+        let repeated = read(&updated).unwrap();
+        let contents: Vec<Option<Obj>> = repeated.sheets.iter().map(|s| get(&s.dict, b"Contents").cloned()).collect();
+        assert_eq!(contents, expected);
+        for sheet in &repeated.sheets {
+            assert_eq!((sheet.size(), sheet.rotate % 180), ((612.0, 792.0), 0), "{sheet:?}");
+            // What the old parent gave each page is the page's own now.
+            assert!(get(&sheet.dict, b"Resources").is_some());
+            assert!(sheet.obj.is_some_and(|(num, _)| num >= sheets.size), "every copy is a new page object");
+        }
+        assert_eq!(get(&repeated.catalog, b"PageMode"), get(&sheets.catalog, b"PageMode"), "the rest of the catalog is kept");
+        // The inherited resources are written once and shared.
+        let resources: Vec<_> = repeated.sheets.iter().filter(|s| get(&s.dict, b"Contents").is_some()).map(|s| get(&s.dict, b"Resources")).collect();
+        assert!(matches!(resources[0], Some(Obj::Ref(..))) && resources.iter().all(|r| *r == resources[0]), "{resources:?}");
+    }
+    // An even page count needs no blank; one copy is the document as it is.
+    let even = classic(&[
+        "<< /Type /Catalog /Pages 2 0 R >>".into(),
+        "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 /MediaBox [0 0 612 792] >>".into(),
+        "<< /Type /Page /Parent 2 0 R >>".into(),
+        "<< /Type /Page /Parent 2 0 R >>".into(),
+    ]);
+    let repeated = read(&even).unwrap().update(&[], Some(Repeat { copies: 3, two_sided: true })).unwrap();
+    assert_eq!(read(&repeated).unwrap().sheets.len(), 6);
+    assert_eq!(sheets.update(&[], Some(Repeat { copies: 1, two_sided: true })).unwrap(), pdf);
+}
+
+#[test]
+fn collated_copies_that_cannot_be_repeated_are_refused() {
+    let repeat = Some(Repeat { copies: 2, two_sided: false });
+    let annotated = three_pages("/Annots [6 0 R]");
+    let refused = read(&annotated).unwrap().update(&[], repeat).unwrap_err();
+    assert!(refused.to_string().contains("flatten page annotations"), "{refused}");
+    let pdf = three_pages("");
+    let sheets = read(&pdf).unwrap();
+    let refused = sheets.update(&[], Some(Repeat { copies: 50_000, two_sided: false })).unwrap_err();
+    assert!(refused.to_string().contains("too many pages"), "{refused}");
+    let encrypted = Sheets { trailer: vec![(b"Encrypt".to_vec(), Obj::Ref(9, 0))], ..read(&pdf).unwrap() };
+    assert!(encrypted.update(&[], repeat).unwrap_err().to_string().contains("encrypted"));
+}
+
+#[test]
+fn a_null_or_missing_entry_inherits_and_an_empty_annotation_list_is_none() {
+    let repeat = Some(Repeat { copies: 2, two_sided: false });
+    for extra in ["/Resources null", "/Resources 99 0 R", "/Annots null", "/Annots []"] {
+        let pdf = three_pages(extra);
+        let updated = read(&pdf).unwrap().update(&[], repeat).unwrap();
+        let repeated = read(&updated).unwrap();
+        let resources: Vec<_> = repeated.sheets.iter().map(|s| get(&s.dict, b"Resources")).collect();
+        assert!(matches!(resources[0], Some(Obj::Ref(..))) && resources.iter().all(|r| *r == resources[0]), "{extra}: {resources:?}");
+    }
+}
+
+#[test]
+fn large_inherited_resources_are_written_once_for_every_copy() {
+    let pages = 4_000;
+    let procset = vec!["/PDF"; 25_000].join(" ");
+    let kids: Vec<String> = (0..pages).map(|i| format!("{} 0 R", i + 3)).collect();
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        format!("<< /Type /Pages /Kids [{}] /Count {pages} /MediaBox [0 0 612 792] /Resources << /ProcSet [{procset}] >> >>", kids.join(" ")),
+    ];
+    objects.extend((0..pages).map(|_| "<< /Type /Page /Parent 2 0 R >>".to_string()));
+    let pdf = classic(&objects);
+    let updated = read(&pdf).unwrap().update(&[], Some(Repeat { copies: 3, two_sided: false })).unwrap();
+    assert!(updated.len() < pdf.len() + (4 << 20), "{} bytes", updated.len());
+    assert_eq!(read(&updated).unwrap().sheets.len(), 3 * pages);
 }

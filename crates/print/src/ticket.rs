@@ -206,6 +206,45 @@ pub(crate) fn offered(capabilities_xml: &str) -> Offered {
     }
 }
 
+/// Whether a `pages`-page job asks for collated copies.
+pub(crate) fn collated_copies(job: &Job, pages: usize) -> bool {
+    job.collate && job.copies.clamp(1, 999) > 1 && pages > 1
+}
+
+/// Whether collated copies are made by repeating the document in one job with one copy on the
+/// ticket: the job asks for them and the driver can't collate.
+pub(crate) fn repeats_collated(job: &Job, pages: usize, offered: Offered) -> bool {
+    collated_copies(job, pages) && offered.collate == Some(false)
+}
+
+/// Whether the validated one-copy ticket of a repeated job ([`crate::sheets::Repeat`]) prints on
+/// both sides. Refused when the copies would not each start on a sheet of their own: a duplex
+/// option other than the schema's, several pages per sheet, or binding (booklets included).
+pub(crate) fn repeated_sides(xml: &str) -> Result<bool, Error> {
+    let document = roxmltree::Document::parse(xml).map_err(spool_error)?;
+    let features = |names: &'static [&'static str]| {
+        document.root_element().children().filter(move |n| n.has_tag_name((NS_PSF, "Feature")) && names.iter().any(|name| named(*n, name)))
+    };
+    fn option<'a, 'i>(feature: roxmltree::Node<'a, 'i>) -> Option<roxmltree::Node<'a, 'i>> {
+        feature.children().find(|n| n.has_tag_name((NS_PSF, "Option")))
+    }
+    let mut two_sided = false;
+    for feature in features(&["JobDuplexAllDocumentsContiguously", "DocumentDuplex"]) {
+        match option(feature) {
+            Some(o) if named(o, "OneSided") => {}
+            Some(o) if named(o, "TwoSidedLongEdge") || named(o, "TwoSidedShortEdge") => two_sided = true,
+            _ => return Err(crate::sheets::not_repeated("the queue's two-sided setting is not one of the standard ones")),
+        }
+    }
+    if features(&["JobNUpAllDocumentsContiguously", "DocumentNUp"]).any(|f| integer(f, "ScoredProperty", "PagesPerSheet").is_some_and(|n| n > 1)) {
+        return Err(crate::sheets::not_repeated("the queue prints several pages per sheet"));
+    }
+    if features(&["JobBindAllDocuments", "DocumentBinding"]).any(|f| !option(f).is_some_and(|o| named(o, "None"))) {
+        return Err(crate::sheets::not_repeated("the queue binds the pages"));
+    }
+    Ok(two_sided)
+}
+
 /// Confirm explicit job options survived driver validation. Collation only changes output
 /// when both the document and copy count exceed one. Without a duplex request the queue's
 /// default applies; without a grayscale request the driver's own colour setting applies.
@@ -216,8 +255,9 @@ pub(crate) fn offered(capabilities_xml: &str) -> Offered {
 /// with no colour option, uncollated copies on one that can't collate. Two-sided on a simplex
 /// driver is refused, and so are collated copies on a driver that can't collate: Windows doesn't
 /// document collating for such a driver (the standard XPS filters make the copies, and leave
-/// collated copies to the device only when its GPD or PPD has a Collate command). An unknown
-/// offer (`None`) is checked strictly.
+/// collated copies to the device only when its GPD or PPD has a Collate command). The job then
+/// repeats the document instead ([`repeats_collated`]) and asks for one copy. An unknown offer
+/// (`None`) is checked strictly.
 pub(crate) fn verify_job_options(xml: &str, job: &Job, pages: usize, offered: Offered) -> Result<(), Error> {
     let document = roxmltree::Document::parse(xml).map_err(spool_error)?;
     let root = document.root_element();
@@ -502,6 +542,11 @@ mod tests {
         let changed = ticket_xml(&collated, false).replace("psk:Collated", "psk:Uncollated");
         assert!(verify_job_options(&changed, &collated, 3, caps(COLLATE)).is_err());
         assert!(verify_job_options(&dropped(&uncollated), &uncollated, 3, Offered::default()).is_err(), "unknown stays strict");
+        // The job repeats the document instead of asking for collated copies.
+        assert!(repeats_collated(&collated, 3, caps(&[])));
+        assert!(!repeats_collated(&collated, 3, caps(COLLATE)) && !repeats_collated(&collated, 3, Offered::default()));
+        assert!(!repeats_collated(&uncollated, 3, caps(&[])) && !repeats_collated(&collated, 1, caps(&[])));
+        assert!(!repeats_collated(&Job { copies: 1, ..collated.clone() }, 3, caps(&[])));
         // One page or one copy has no collating order.
         assert!(verify_job_options(&dropped(&collated), &collated, 1, caps(&[])).is_ok());
     }
@@ -581,5 +626,26 @@ mod tests {
         assert_eq!(job_filename("..."), "Print.pdf");
         assert_eq!(job_filename(""), "Print.pdf");
         assert_eq!(job_filename("Отчёт"), "Отчёт.pdf");
+    }
+
+    #[test]
+    fn a_repeated_job_reads_its_sides_and_refuses_layouts_that_mix_copies() {
+        let xml = ticket_xml(&Job { duplex: Some(Duplex::LongEdge), ..Job::default() }, false);
+        assert!(repeated_sides(&xml).unwrap());
+        assert!(repeated_sides(&xml.replace("JobDuplexAllDocumentsContiguously", "DocumentDuplex")).unwrap());
+        assert!(!repeated_sides(&ticket_xml(&Job { duplex: Some(Duplex::Off), ..Job::default() }, false)).unwrap());
+        assert!(!repeated_sides(&ticket_xml(&Job::default(), false)).unwrap(), "no duplex feature");
+        assert!(repeated_sides(&xml.replace("psk:TwoSidedLongEdge", "vendor:Duplex")).is_err(), "an option it can't read");
+        let with = |feature: &str| xml.replace("</psf:PrintTicket>", &format!("{feature}</psf:PrintTicket>"));
+        let n_up = |n: u32| {
+            with(&format!(
+                r#"<psf:Feature name="psk:JobNUpAllDocumentsContiguously"><psf:Option><psf:ScoredProperty name="psk:PagesPerSheet"><psf:Value xsi:type="xsd:integer">{n}</psf:Value></psf:ScoredProperty></psf:Option></psf:Feature>"#
+            ))
+        };
+        assert!(repeated_sides(&n_up(1)).is_ok());
+        assert!(repeated_sides(&n_up(2)).is_err());
+        let binding = |option: &str| with(&format!(r#"<psf:Feature name="psk:JobBindAllDocuments"><psf:Option name="psk:{option}"/></psf:Feature>"#));
+        assert!(repeated_sides(&binding("None")).is_ok());
+        assert!(repeated_sides(&binding("Booklet")).is_err());
     }
 }
