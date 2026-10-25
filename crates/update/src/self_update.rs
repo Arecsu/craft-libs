@@ -919,9 +919,11 @@ mod tests {
         assert!(check_helper(&crate::suite::LAUNCHER, &me, &paths, &exe, &portable(&zip, &paths.downloads())).is_err());
         // An MSI for a portable installation.
         assert!(check_helper(&crate::suite::LAUNCHER, &me, &paths, &exe, &Finish::Msi(zip.clone())).is_err());
-        // No longer a portable installation.
+        // Without portable.txt it is a standalone executable, which updates from the same zip.
         std::fs::remove_file(folder.join("portable.txt")).unwrap();
-        assert!(check_helper(&crate::suite::LAUNCHER, &me, &paths, &exe, &portable(&zip, &staging)).is_err());
+        assert_eq!(check_helper(&crate::suite::LAUNCHER, &me, &paths, &exe, &portable(&zip, &staging)), Ok(()));
+        // An MSI is for an MSI installation only.
+        assert!(check_helper(&crate::suite::LAUNCHER, &me, &paths, &exe, &Finish::Msi(zip.clone())).is_err());
     }
 
     /// The helper finds a portable launcher's folders beside it, as that launcher does.
