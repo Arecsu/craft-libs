@@ -475,15 +475,19 @@ windows from the first frame. `DockArea::native_windows(bool)` overrides the cho
   monitor on a second display. A window holding any `Normal` panel is a normal window, whichever
   of its tabs shows; the rest are palettes.
   - Palettes stay above other windows (`WindowLevel::AlwaysOnTop`), so clicking the document
-    does not bury them. While none of the app's windows has focus they hide
-    (`ViewportCommand::Visible(false)`), and they come back when one has it again. The hide
-    waits 250 ms, so focus moving between the app's own windows does not flicker.
+    does not bury them. They stay shown while the app is in the background, so files dragged
+    from another app reach them and an OS sheet attached to one stays open. While none of the
+    app's windows has focus they take `WindowLevel::Normal`, so they do not cover other apps
+    (on Windows `WindowLevel::AlwaysOnBottom`: there `Normal` would put them in front of the
+    app the user switched to), and they go back to `AlwaysOnTop` when one has it again. The app counts as in the
+    background after 250 ms without focus, so focus moving between its own windows changes
+    nothing. The level is sent only when it changes.
   - Normal windows have `WindowLevel::Normal` and stay shown while the app is in the
     background. They stack with the main window by focus, below every palette; a drag over a
     normal window that lies behind the main window targets the main window where the two
     overlap, and the normal window outside the main window.
   - Like palettes, normal windows have no taskbar entry; they come forward with the app
-    instead. When one of the app's windows gains focus after none had it for the hide delay,
+    instead. When one of the app's windows gains focus after none had it for 250 ms,
     the main window and each normal window get `WindowLevel::AlwaysOnTop` and then
     `WindowLevel::Normal`, one window per frame, in their focus order from back to front.
     They keep their order, nothing takes focus, and the window the user activated is raised
@@ -573,9 +577,8 @@ windows from the first frame. `DockArea::native_windows(bool)` overrides the cho
   answers the OS close request with `ViewportCommand::CancelClose`. On macOS it is not
   resizable meanwhile.
   - *Stacking.* A palette drops to `WindowLevel::Normal` while blocked, so a click on the main
-    window brings it in front of a palette that covers the modal. A shown palette stays shown
-    while the app is in the background, since showing it again on the app's return would raise
-    it over the modal and, on macOS, give it focus. When the app is activated meanwhile, the
+    window brings it in front of a palette that covers the modal. It stays shown and at that
+    level when the app goes to the background and returns. When the app is activated meanwhile, the
     main window is raised last, in front of the normal windows and of a palette the user
     clicked.
   - *Edges.* Turning blocking on cancels a drag in progress, and a widget of a native window

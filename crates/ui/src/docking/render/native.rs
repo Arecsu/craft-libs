@@ -1,7 +1,8 @@
 //! Floating windows in their own OS windows (feature `native-windows`). Where the backend has
 //! viewports, every floating window whose panels allow it is drawn with
-//! `show_viewport_immediate`. Palettes stay on top of other windows and hide while none of the
-//! application's windows has focus; viewers are normal windows that come forward when the
+//! `show_viewport_immediate`. Palettes stay on top of the application's other windows, and
+//! drop to the normal level while none of its windows has focus, so they stay shown without
+//! covering other applications; viewers are normal windows that come forward when the
 //! application is activated. Where egui embeds viewports (wasm, tests) windows stay
 //! in-window at their in-window rect, and so do they on Wayland, unless the app turns native
 //! windows on ([`crate::docking::DockArea::native_windows`]). Tabs, groups and whole windows
@@ -25,13 +26,19 @@ use crate::docking::{Action, Drag, Floating, GroupDrag, GroupGesture, Node, Wind
 
 /// Smallest native window.
 const MIN_SIZE: [f32; 2] = [160.0, 100.0];
-/// How long floating windows stay after the application's last window lost focus, so focus
-/// moving between our own windows does not hide them.
-const HIDE_DELAY: f64 = 0.25;
+/// How long none of the application's windows has focus before the application counts as
+/// inactive, so focus moving between our own windows does not.
+const AWAY_DELAY: f64 = 0.25;
 /// Whether normal windows are raised when the application is activated. macOS brings an
 /// application's windows forward itself: all of them on activation from the Dock or the
 /// application switcher, the clicked one alone on a click, as its own windows do.
 const RAISE_ON_ACTIVATION: bool = !cfg!(target_os = "macos");
+/// The level of a palette while the application is inactive, behind other applications'
+/// windows. On Windows `WindowLevel::Normal` is `HWND_NOTOPMOST`, which puts the window in
+/// front of every window that is not topmost, the activated application's too; `HWND_BOTTOM`
+/// sends it behind them without activating it.
+pub(in crate::docking) const INACTIVE_PALETTE: WindowLevel =
+    if cfg!(target_os = "windows") { WindowLevel::AlwaysOnBottom } else { WindowLevel::Normal };
 /// How long reports of a native window's place may lag a move the dock area commanded.
 const MOVE_WAIT: f64 = 0.5;
 /// How far the resize bands reach into a native window from its edges, where the window has
@@ -204,8 +211,6 @@ struct Place {
     pending: Option<f64>,
     /// The window system put the frame, not the content, where it opened: corrected once.
     corrected: bool,
-    /// Shown, as it opened or was last told.
-    shown: bool,
     /// The height of its bar while minimized, as it was last told. `known` keeps the expanded
     /// size meanwhile.
     collapsed: Option<f32>,
@@ -230,12 +235,6 @@ pub(in crate::docking) fn viewport_id(area: Id, window: u64, n: usize) -> Viewpo
         0 => ViewportId::from_hash_of((area, "native", window)),
         n => ViewportId::from_hash_of((area, "native", window, n)),
     }
-}
-
-/// Whether floating windows show: while one of the application's windows has focus, and until
-/// [`HIDE_DELAY`] after `last_focused`, when one last had it.
-pub(in crate::docking) fn floats_shown(focused: bool, now: f64, last_focused: f64) -> bool {
-    focused || now - last_focused < HIDE_DELAY
 }
 
 /// The desktop rect of a native viewport's content. None when the backend reports no
@@ -268,7 +267,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
     pub(super) fn native_windows<'w>(&mut self, ctx: &Context, windows: Vec<&'w Floating<P>>) -> Vec<&'w Floating<P>> {
         let native = !ctx.embed_viewports() && self.native_windows.unwrap_or_else(|| !wayland(ctx, env_session()));
         let origin = ctx.input(|i| i.viewport().inner_rect.map(|r| r.min)).filter(|p| p.is_finite()).unwrap_or(Pos2::ZERO);
-        let (visible, activated) = if native { self.float_visibility(ctx) } else { (true, false) };
+        let (active, activated) = if native { self.app_activity(ctx) } else { (true, false) };
         self.cross.on = native;
         let mut shown = Vec::new();
         let mut in_window = Vec::new();
@@ -299,7 +298,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             if ctx.data(|d| d.get_temp::<WindowDrag>(key)).is_some_and(|d| !natives.iter().any(|(w, ..)| w.id == d.window)) {
                 ctx.data_mut(|d| d.remove::<WindowDrag>(key));
             }
-            self.map_desktop(ctx, &natives, visible, activated);
+            self.map_desktop(ctx, &natives, activated);
             self.raise_next(ctx, &natives);
             // The main window owns drags of the panels it draws.
             let id = self.id;
@@ -314,7 +313,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         }
         self.map_body_route(ctx, native);
         for (window, rect, viewport) in natives {
-            if let Some(key) = self.native_window(ctx, window, rect, viewport, visible) {
+            if let Some(key) = self.native_window(ctx, window, rect, viewport, active) {
                 shown.push(key);
             }
         }
@@ -352,10 +351,9 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
 
     /// The main window and the shown native windows on the desktop, front first: palettes
     /// above the rest, each the window focused most recently first. A window whose position is
-    /// unknown is left out. `visible`: palettes show. `activated`: the application was just
-    /// activated, so the main window and its normal windows are raised (see
-    /// [`Self::raise_next`]).
-    fn map_desktop(&mut self, ctx: &Context, natives: &[(&Floating<P>, [f32; 4], ViewportId)], visible: bool, activated: bool) {
+    /// unknown is left out. `activated`: the application was just activated, so the main window
+    /// and its normal windows are raised (see [`Self::raise_next`]).
+    fn map_desktop(&mut self, ctx: &Context, natives: &[(&Floating<P>, [f32; 4], ViewportId)], activated: bool) {
         let key = self.id.with("native-order");
         // Focus order, front first; `None` is the main window.
         let mut order = ctx.data(|d| d.get_temp::<Vec<Option<u64>>>(key)).unwrap_or_default();
@@ -385,7 +383,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
                 Some(info) => placed(&info).map(|[x, y, w, h]| Rect::from_min_size(pos2(x, y), vec2(w, h))),
             };
             let normal = self.normal_window(window);
-            if let Some(placed) = placed.filter(|r| r.is_finite() && (visible || normal)) {
+            if let Some(placed) = placed.filter(|r| r.is_finite()) {
                 windows.push((window.id, placed, normal));
             }
         }
@@ -446,10 +444,11 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         }
     }
 
-    /// Whether palettes show this frame, and whether the application was just activated: one
-    /// of its windows has focus after none had it for long enough to hide the palettes.
-    /// Losing focus again stops the raise of normal windows that activation started.
-    fn float_visibility(&mut self, ctx: &Context) -> (bool, bool) {
+    /// Whether the application is active this frame: one of its windows has focus, or one had it
+    /// less than [`AWAY_DELAY`] ago. And whether it was just activated: one of its windows has
+    /// focus after none had it for that long. Losing focus again stops the raise of normal
+    /// windows that activation started.
+    fn app_activity(&mut self, ctx: &Context) -> (bool, bool) {
         let (focused, now) = ctx.input(|i| {
             let infos = || i.raw.viewports.values();
             // A backend that reports no focus at all keeps the windows.
@@ -457,35 +456,34 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             (focused, i.time)
         });
         self.cross.focus_lost = crate::focus::turned_false(ctx, self.id.with("app-focus"), focused);
-        let key = self.id.with("native-visibility");
+        let key = self.id.with("native-last-focused");
         let last = if focused { now } else { ctx.data(|d| d.get_temp::<f64>(key)).unwrap_or(now) };
-        let visible = floats_shown(focused, now, last);
-        if visible && !focused {
-            ctx.request_repaint_after(std::time::Duration::from_secs_f64((HIDE_DELAY - (now - last)).max(0.0)));
+        let active = focused || now - last < AWAY_DELAY;
+        if active && !focused {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64((AWAY_DELAY - (now - last)).max(0.0)));
         }
         ctx.data_mut(|d| d.insert_temp(key, last));
         let away_key = self.id.with("native-away");
         let away = ctx.data(|d| d.get_temp::<bool>(away_key)).unwrap_or(false);
         ctx.data_mut(|d| {
-            d.insert_temp(away_key, !focused && (away || !visible));
+            d.insert_temp(away_key, !focused && (away || !active));
             if !focused {
                 d.remove::<Vec<Option<u64>>>(self.id.with("native-raise"));
             }
         });
-        (visible, focused && away)
+        (active, focused && away)
     }
 
-    /// A window holding a viewer is a normal window, so it neither vanishes nor sits over other
-    /// applications; the rest are palettes.
+    /// A window holding a viewer is a normal window, so it stacks with the main window; the rest
+    /// are palettes.
     fn normal_window(&self, window: &Floating<P>) -> bool {
         window.panels().any(|p| self.content.window_kind(p) == WindowKind::Normal)
     }
 
-    /// One floating window in its own viewport. `visible`: palettes show. Returns the key of
-    /// its [`Place`].
-    fn native_window(&mut self, ctx: &Context, window: &Floating<P>, rect: [f32; 4], viewport: ViewportId, visible: bool) -> Option<Id> {
+    /// One floating window in its own viewport. `active`: the application is active (see
+    /// [`Self::app_activity`]). Returns the key of its [`Place`].
+    fn native_window(&mut self, ctx: &Context, window: &Floating<P>, rect: [f32; 4], viewport: ViewportId, active: bool) -> Option<Id> {
         let normal = self.normal_window(window);
-        let visible = visible || normal;
         let first = window.panels().next()?.clone();
         let key = self.id.with(("native-place", viewport));
         let now = ctx.input(|i| i.time);
@@ -522,7 +520,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
                 };
                 seen.insert(window.id);
                 ctx.data_mut(|d| d.insert_temp(seen_key, seen));
-                Place { spawn, known: spawn, pending: Some(now + MOVE_WAIT), corrected: false, shown: true, collapsed: None }
+                Place { spawn, known: spawn, pending: Some(now + MOVE_WAIT), corrected: false, collapsed: None }
             }
         };
         // Minimized or expanded: the window keeps its top-left corner and width, and its
@@ -546,8 +544,14 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             .with_inner_size([spawn[2], spawn[3]])
             .with_min_inner_size(MIN_SIZE)
             // A blocked palette could cover the modal, and its bar moves nothing: the main
-            // window can come in front of it at the normal level.
-            .with_window_level(if normal || self.input_blocked { WindowLevel::Normal } else { WindowLevel::AlwaysOnTop })
+            // window can come in front of it at the normal level. While the application is
+            // inactive, its palettes stay shown behind other applications' windows
+            // (`INACTIVE_PALETTE`). egui sends the level only when it changes.
+            .with_window_level(match (normal || self.input_blocked, active) {
+                (true, _) => WindowLevel::Normal,
+                (false, true) => WindowLevel::AlwaysOnTop,
+                (false, false) => INACTIVE_PALETTE,
+            })
             .with_taskbar(false);
         // The bar replaces the OS title bar. macOS keeps the frame, with its title bar and
         // buttons hidden: AppKit resizes a movable window from its edges and corners with its
@@ -561,15 +565,9 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             .with_resizable(!self.input_blocked && window.panels().all(|p| self.permissions(p).movable));
         #[cfg(not(target_os = "macos"))]
         let builder = builder.with_decorations(false);
-        // A blocked palette keeps showing while the app is away: showing it on the app's return
-        // would raise it over the modal and, on macOS, give it focus.
-        let visible = visible || (self.input_blocked && place.shown);
-        // Only on a change: showing a shown window raises it and, on macOS, takes focus.
-        if place.shown != visible {
-            ctx.send_viewport_cmd_to(viewport, ViewportCommand::Visible(visible));
-            place.shown = visible;
-        }
-        if visible && !self.input_blocked && self.activation.as_ref().is_some_and(|panel| window.contains(panel)) {
+        // While the application is inactive, raising a palette leaves focus with the application
+        // in use.
+        if (active || normal) && !self.input_blocked && self.activation.as_ref().is_some_and(|panel| window.contains(panel)) {
             ctx.send_viewport_cmd_to(viewport, ViewportCommand::Focus);
         }
         let (targets, docks, windows) = (self.targets.len(), self.dock_targets.len(), self.frame.windows.len());

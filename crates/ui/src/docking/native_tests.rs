@@ -4,7 +4,7 @@
 use egui::{Color32, Event, Key, Modifiers, PointerButton, Pos2, Rect, Vec2, ViewportCommand, epaint::ClippedShape, pos2, vec2};
 
 use super::render::{
-    APPKIT_CORNER, DragPointer, MACOS_CLOSE, WindowDrag, appkit_resize_areas, close_rects, drag_opacity, floats_shown, resize_bands, wayland,
+    APPKIT_CORNER, DragPointer, INACTIVE_PALETTE, MACOS_CLOSE, WindowDrag, appkit_resize_areas, close_rects, drag_opacity, resize_bands, wayland,
 };
 use super::testing::DockDriver;
 use super::{Action, DockContent, Floating, Hit, Layout, Monitor, Node, Permissions, Placement, Target, WindowKind, Workspace};
@@ -457,37 +457,40 @@ fn id_of(d: &DockDriver<u32, Content>) -> u64 {
 }
 
 #[test]
-fn floating_windows_hide_while_the_app_is_inactive() {
-    assert!(floats_shown(true, 10.0, 10.0));
-    assert!(floats_shown(false, 10.2, 10.0));
-    assert!(!floats_shown(false, 10.3, 10.0));
-
+fn palettes_stay_shown_at_the_normal_level_while_the_app_is_inactive() {
+    use egui::{ViewportId, WindowLevel};
     let mut d = driver(layout(true));
-    let viewport = d.viewport(window(&d, 5).id);
-    let hides =
-        |d: &DockDriver<u32, Content>| d.host().commands.iter().filter(|(v, c)| *v == viewport && *c == ViewportCommand::Visible(false)).count();
-    // Focus moving to the floating window keeps it.
-    d.host().focus = None;
-    d.step(vec![]);
-    d.host().focus = Some(viewport);
-    for _ in 0..30 {
-        d.step(vec![]);
-    }
-    assert_eq!(hides(&d), 0);
-    // Another application: hidden after the delay, shown again on return.
-    d.host().focus = None;
-    for _ in 0..10 {
-        d.step(vec![]);
-    }
-    assert_eq!(hides(&d), 0, "not yet");
-    for _ in 0..10 {
-        d.step(vec![]);
-    }
-    assert_eq!(hides(&d), 1);
-    assert!(!d.host().windows[&viewport].visible);
-    d.host().focus = Some(egui::ViewportId::ROOT);
-    d.step(vec![]);
-    assert!(d.host().windows[&viewport].visible);
+    let palette = d.viewport(window(&d, 5).id);
+    let focus = |d: &mut DockDriver<u32, Content>, window: Option<ViewportId>, frames: usize| {
+        d.host().focus = window;
+        for _ in 0..frames {
+            d.step(vec![]);
+        }
+    };
+    let level = |d: &DockDriver<u32, Content>| d.host().windows[&palette].level;
+    let told = |d: &DockDriver<u32, Content>| d.host().commands.iter().any(|(v, c)| *v == palette && matches!(c, ViewportCommand::Visible(_)));
+    assert_eq!(level(&d), Some(WindowLevel::AlwaysOnTop));
+    // Focus moving to the palette, with a frame of none between, keeps it on top.
+    focus(&mut d, None, 1);
+    focus(&mut d, Some(palette), 30);
+    assert_eq!(level(&d), Some(WindowLevel::AlwaysOnTop));
+    // Another application: the palette drops behind it after the delay, and shows on, so
+    // files dragged from that application can reach it.
+    focus(&mut d, None, 10);
+    assert_eq!(level(&d), Some(WindowLevel::AlwaysOnTop), "not yet");
+    focus(&mut d, None, 10);
+    assert_eq!(level(&d), Some(INACTIVE_PALETTE));
+    // Back: on top again.
+    focus(&mut d, Some(ViewportId::ROOT), 1);
+    assert_eq!(level(&d), Some(WindowLevel::AlwaysOnTop));
+    // Blocked by a modal, it stays at the normal level, away and back.
+    d.input_blocked = true;
+    focus(&mut d, None, 20);
+    assert_eq!(level(&d), Some(WindowLevel::Normal));
+    focus(&mut d, Some(ViewportId::ROOT), 5);
+    assert_eq!(level(&d), Some(WindowLevel::Normal));
+    assert!(d.host().windows[&palette].visible);
+    assert!(!told(&d), "{:?}", d.host().commands);
 }
 
 #[test]
@@ -507,18 +510,20 @@ fn viewer_windows_stay_shown_at_normal_level() {
     assert_eq!(level(&d, viewer), Some(egui::WindowLevel::Normal));
     assert_eq!(level(&d, palette), Some(egui::WindowLevel::AlwaysOnTop));
     assert_eq!(level(&d, mixed), Some(egui::WindowLevel::Normal));
-    // Another application: only the palette hides, and the others get no visibility command.
+    // Another application: the palette drops behind it; the viewers stay at the normal level.
     d.host().focus = None;
     for _ in 0..20 {
         d.step(vec![]);
     }
-    let shown = |d: &DockDriver<u32, Content>| [viewer, palette, mixed].map(|v| d.host().windows[&v].visible);
-    assert_eq!(shown(&d), [true, false, true]);
-    let told = |d: &DockDriver<u32, Content>, v| d.host().commands.iter().any(|(w, c)| *w == v && matches!(c, ViewportCommand::Visible(_)));
-    assert!(!told(&d, viewer) && !told(&d, mixed));
+    assert_eq!(
+        [viewer, palette, mixed].map(|v| level(&d, v)),
+        [Some(egui::WindowLevel::Normal), Some(INACTIVE_PALETTE), Some(egui::WindowLevel::Normal)]
+    );
     d.host().focus = Some(egui::ViewportId::ROOT);
     d.step(vec![]);
-    assert_eq!(shown(&d), [true, true, true]);
+    assert_eq!(level(&d, palette), Some(egui::WindowLevel::AlwaysOnTop));
+    assert_eq!(level(&d, viewer), Some(egui::WindowLevel::Normal));
+    assert!(!d.host().commands.iter().any(|(_, c)| matches!(c, ViewportCommand::Visible(_))), "no window hides");
 }
 
 #[test]
@@ -568,7 +573,7 @@ fn the_app_comes_forward_with_its_viewers_when_it_is_activated() {
     focus(&mut d, Some(MAIN), 2);
     assert_eq!(levels(&mut d), []);
     // Another application, then back through the main window: the viewers are raised back to
-    // front and the main window last, without focus; the palette only shows again.
+    // front and the main window last, without focus; the palette only goes back on top.
     focus(&mut d, None, 20);
     focus(&mut d, Some(MAIN), 10);
     assert_eq!(levels(&mut d), raised(&[back, front, MAIN]));
@@ -1815,11 +1820,13 @@ fn a_blocked_palette_stays_shown_and_behind_the_main_window_when_the_app_returns
             d.step(vec![]);
         }
     };
-    // Showing it again would raise it over the modal and, on macOS, give it focus.
+    // Away and back, it stays shown at the normal level: showing it or putting it on top could
+    // raise it over the modal, and showing it would, on macOS, give it focus.
     focus(&mut d, None);
     assert!(d.host().windows[&palette].visible);
     focus(&mut d, Some(palette));
     let host = d.host();
+    assert_eq!(host.windows[&palette].level, Some(WindowLevel::Normal));
     assert!(!host.commands.iter().any(|(v, c)| *v == palette && matches!(c, ViewportCommand::Visible(_))), "{:?}", host.commands);
     // Activated through the palette, the main window comes in front of it, with no viewers.
     let levels: Vec<_> = host.commands.iter().filter(|(_, c)| matches!(c, ViewportCommand::WindowLevel(_))).cloned().collect();
