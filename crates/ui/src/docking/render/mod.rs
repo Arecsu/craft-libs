@@ -7,6 +7,8 @@ use crate::layout::{ResizeHandle, ResizeHandleStyle, SplitAxis};
 use super::{Action, DockContent, DockOutput, DockStyle, DropTarget, Layout, Node, PanelLimits, Permissions, dock_model::Place};
 
 #[cfg(feature = "native-windows")]
+mod body_drag;
+#[cfg(feature = "native-windows")]
 mod cross;
 mod dock;
 mod floating;
@@ -22,8 +24,45 @@ pub(in crate::docking) use {
     native::{APPKIT_CORNER, MACOS_CLOSE, Session, appkit_resize_areas, close_rects, floats_shown, resize_bands, session, wayland},
 };
 
+#[cfg(all(test, feature = "native-windows"))]
+pub(in crate::docking) use body_drag::held_events;
+#[cfg(feature = "native-windows")]
+pub(in crate::docking) use body_drag::{cancel_body_route, mark_app_drag};
 #[cfg(feature = "native-windows")]
 pub(in crate::docking) use native::{InputHook, set_input_hook};
+
+/// How long after blocking starts a native window that still has the keyboard hands it to the
+/// main window: an OS dialog the app opens with the modal (a file dialog) takes focus a little
+/// later, and a Focus sent before then could raise the main window over it.
+#[cfg(feature = "native-windows")]
+const BLOCKED_FOCUS_WAIT: f64 = 0.2;
+
+/// While input is blocked (`starts`: from this frame), a native window of the dock area `area`
+/// with the keyboard would drop the keys the modal needs, so once, after
+/// [`BLOCKED_FOCUS_WAIT`], the main window, where the modal is, takes the keyboard if one still
+/// has it. If focus went elsewhere meanwhile, such as to an OS dialog, nothing is sent.
+#[cfg(feature = "native-windows")]
+pub(in crate::docking) fn focus_main_from_native<P>(ctx: &Context, area: Id, layout: &Layout<P>, blocked: bool, starts: bool) {
+    let (key, now) = (area.with("blocked-focus"), ctx.input(|i| i.time));
+    if !blocked {
+        ctx.data_mut(|d| d.remove::<f64>(key));
+        return;
+    }
+    if starts {
+        ctx.data_mut(|d| d.insert_temp(key, now));
+    }
+    let Some(since) = ctx.data(|d| d.get_temp::<f64>(key)) else { return };
+    if now - since < BLOCKED_FOCUS_WAIT {
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(BLOCKED_FOCUS_WAIT - (now - since)));
+        return;
+    }
+    ctx.data_mut(|d| d.remove::<f64>(key));
+    let focused =
+        ctx.input(|i| layout.floating.iter().any(|w| i.raw.viewports.get(&native_viewport(area, w.id)).and_then(|v| v.focused) == Some(true)));
+    if focused {
+        ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
+    }
+}
 
 /// The viewport of the native window `window` of the dock area `area`.
 #[cfg(feature = "native-windows")]
@@ -370,6 +409,11 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         // Any button: a canvas pans with the middle button and opens menus with the secondary.
         if child.rect_contains_pointer(rect) && child.input(|i| i.pointer.any_pressed()) {
             self.output.focused = Some(panel.clone());
+            #[cfg(feature = "native-windows")]
+            if let Some(press) = child.input(|i| i.pointer.press_origin()) {
+                let key = body_drag::body_press_key(self.id, child.ctx().viewport_id());
+                child.ctx().data_mut(|d| d.insert_temp(key, press));
+            }
         }
         #[cfg(feature = "native-windows")]
         if child.rect_contains_pointer(rect) {

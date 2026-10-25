@@ -1,5 +1,9 @@
 # egui 0.37 migration plan for craft-libs
 
+Status update (2026-10-25): local candidate includes main `865c9af7fdf455cd3892402d18e526a9f019c6bc`, preserving current native docking, blocked-window focus and print-copy handling. Native input-callback cancellation no longer re-enters the plugin mutex. Both cancellation regressions reproduced the deadlock before the fix. Current gates passed: 1,774 test executions, zero failures, 21 ignored, plus strict workspace/UI/print lint, UI all-feature tests, native example build and UI WASM check. Independent merge/implementation and compiler-correction reviews passed. App-pinned ancestors 25da1314 and 650b1c0 remain reachable. Current-source native platforms/GUI/printer hardware and paired performance remain open; the attempted paired run stopped before measurement due to a collector metadata-projection bug. Publication needs separate explicit approval; human review and human merge are required.
+
+The original planning record below is historical.
+
 Status: final landing integration, 2026-10-25. The reviewed shared UI includes screenshot completion, shaped-text alignment, keymap support and regression coverage. The manifest and lock select egui `6d518fc799681571963842f95b55a6b68431b15a` and winit `a517b3846ee8457d84ee4975110bfda6797c44dc` through canonical GitHub URLs.
 
 The integration of migration ancestor `25da1314d443171b4adeaad2cd9454b273f35c6f` with main `2ab6049d9031bc8fae7f7df669b5fccaf5b9966f` passed formatting, strict workspace all-target clippy, workspace tests and the PDF all-feature suite in managed job `egui037-craft-libs-current-main-gates-20261024-2021`. Source and lock hashes were checked against that job before the local integration checkpoint.

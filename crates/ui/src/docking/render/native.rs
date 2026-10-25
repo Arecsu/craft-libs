@@ -5,9 +5,10 @@
 //! application is activated. Where egui embeds viewports (wasm, tests) windows stay
 //! in-window at their in-window rect, and so do they on Wayland, unless the app turns native
 //! windows on ([`crate::docking::DockArea::native_windows`]). Tabs, groups and whole windows
-//! drag between OS windows (see `cross.rs`).
+//! drag between OS windows (see `cross.rs`), and so do the app's drags in panel bodies
+//! (`body_drag.rs`).
 
-use std::{fmt::Debug, hash::Hash};
+use std::{fmt::Debug, hash::Hash, sync::Arc};
 
 use egui::{
     Color32, Context, CursorIcon, Event, Id, Key, LayerId, Modifiers, Order, Pos2, RawInput, Rect, ResizeDirection, Sense, Ui, UiBuilder, Vec2,
@@ -15,6 +16,7 @@ use egui::{
 };
 
 use super::Renderer;
+use super::body_drag::{BodyRoute, Held, Queued};
 use super::cross::{DragPointer, Surface};
 use crate::docking::chrome::{ChromeStyle, TitleBar};
 pub(in crate::docking) use crate::docking::placement::BAR_HEIGHT;
@@ -159,7 +161,7 @@ fn differs(a: [f32; 4], b: [f32; 4]) -> bool {
 
 /// Desktop position of a viewport's content, and its offset from the window's outer
 /// position, where the window system reports both.
-fn content_of(info: &ViewportInfo) -> Option<(Pos2, Vec2)> {
+pub(super) fn content_of(info: &ViewportInfo) -> Option<(Pos2, Vec2)> {
     let (outer, inner) = (info.outer_rect?, info.inner_rect?);
     (outer.min.is_finite() && inner.min.is_finite()).then(|| (inner.min, inner.min - outer.min))
 }
@@ -251,7 +253,9 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
                 let origin = self.cross.main.map(|m| m.min);
                 self.record_pointer(ctx, None, origin, None);
             }
+            self.cross.viewports = natives.iter().map(|(w, _, viewport)| (w.id, *viewport)).collect();
         }
+        self.map_body_route(ctx, native);
         for (window, rect, viewport) in natives {
             if let Some(key) = self.native_window(ctx, window, rect, viewport, visible) {
                 shown.push(key);
@@ -546,6 +550,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
                 }
             } else {
                 self.paint_cross(ui, &mut surface);
+                self.route_body_drag(ui.ctx(), Some(window.id));
                 self.forward_events(ui);
                 self.report_files(ui, window, viewport);
             }
@@ -801,12 +806,38 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
 }
 
 /// Input hooks of dock areas for their native windows, run by egui before it reads each
-/// window's input. eframe runs `App::raw_input_hook` for the main window only.
+/// window's input. eframe runs `App::raw_input_hook` for the main window only. App drags in
+/// panel bodies cross windows here too (`body_drag.rs`).
 #[derive(Default)]
-struct NativeInput {
+pub(super) struct NativeInput {
     hooks: std::collections::HashMap<Id, egui::mutex::Mutex<InputHook>>,
     /// The dock area of each native window shown this frame.
     windows: std::collections::HashMap<ViewportId, Id>,
+}
+
+/// Each dock area's app drag in a panel body, and the releases waiting for a window's next
+/// input. Kept outside [`NativeInput`]: egui calls [`egui::Plugin::input_hook`] with the plugin
+/// locked, and an app's input hook may call [`crate::docking::cancel_drag`], which must reach
+/// the routes without locking the plugin again. The lock here is dropped before that hook runs.
+#[derive(Default)]
+pub(super) struct NativeBodyInput {
+    /// Each dock area's app drag in a panel body.
+    pub routes: std::collections::HashMap<Id, BodyRoute>,
+    /// Pointer events routed to each window, for its next input.
+    pub queued: Queued,
+    /// Owners' held releases, for their input in a later main-window pass.
+    pub held: Held,
+    /// The main window's passes so far.
+    pub pass: u64,
+}
+
+/// The app drag routing and routed events shared by every native input hook of `ctx`.
+pub(super) fn body_input(ctx: &Context) -> Arc<egui::mutex::Mutex<NativeBodyInput>> {
+    ctx.data_mut(|data| data.get_temp_mut_or_default::<Arc<egui::mutex::Mutex<NativeBodyInput>>>(body_input_key()).clone())
+}
+
+fn body_input_key() -> Id {
+    Id::unique("craft-ui docking native body input")
 }
 
 pub(in crate::docking) type InputHook = Box<dyn FnMut(&Context, &mut RawInput) + Send>;
@@ -817,6 +848,38 @@ impl egui::Plugin for NativeInput {
     }
 
     fn input_hook(&mut self, ctx: &Context, input: &mut RawInput) {
+        let viewport = input.viewport_id;
+        let body = body_input(ctx);
+        let mut routed = false;
+        {
+            let mut body = body.lock();
+            let body = &mut *body;
+            if viewport == ViewportId::ROOT {
+                body.pass += 1;
+                // Every window draws in the main window's pass: events for one that has not
+                // drawn since the last pass are for a window that is gone.
+                let pass = body.pass;
+                body.queued.retain(|_, (at, _)| *at + 1 >= pass);
+                body.held.retain(|_, (at, _)| *at + 1 >= pass);
+            }
+            // Taken before routing, which may queue more for this window's next input. A held
+            // release waits for a later main-window pass: a discarded pass reruns within its own.
+            let waiting = body.queued.remove(&viewport);
+            let held = if body.held.get(&viewport).is_some_and(|(at, _)| *at < body.pass) { body.held.remove(&viewport) } else { None };
+            for route in body.routes.values_mut() {
+                routed |= route.route(input, &mut body.queued, &mut body.held, body.pass);
+            }
+            // Before the window's own events: they happened earlier, and a held release must
+            // not end a press that follows it.
+            let earlier =
+                held.into_iter().flat_map(|(_, events)| events).chain(waiting.into_iter().flat_map(|(_, events)| events.into_iter().map(|(_, e)| e)));
+            input.events.splice(0..0, earlier);
+        }
+        if routed {
+            ctx.request_repaint_of(ViewportId::ROOT);
+        }
+        // After the routing lock is dropped: the app's hook may call `cancel_drag`, which locks
+        // the same body state through egui's temporary data, not this plugin.
         if let Some(hook) = self.windows.get(&input.viewport_id).and_then(|area| self.hooks.get(area)) {
             (hook.lock())(ctx, input);
         }
@@ -826,7 +889,7 @@ impl egui::Plugin for NativeInput {
 /// Set or clear the input hook of the dock area `area` for this frame, and forget its native
 /// windows until they show again.
 pub(in crate::docking) fn set_input_hook(ctx: &Context, area: Id, hook: Option<InputHook>) {
-    if hook.is_some() && ctx.plugin_opt::<NativeInput>().is_none() {
+    if ctx.plugin_opt::<NativeInput>().is_none() {
         ctx.add_plugin(NativeInput::default());
     }
     ctx.with_plugin(|input: &mut NativeInput| {
