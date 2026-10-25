@@ -729,6 +729,10 @@ fn check_helper(app: &App, me: &Path, paths: &Paths, exe: &Path, step: &Finish) 
         return Err(refused());
     }
     let exe = canonical(exe)?;
+    // Whatever the folder, the program to restart is this app's own, never another executable.
+    if !exe.file_stem().and_then(|stem| stem.to_str()).is_some_and(|stem| app.stems().any(|id| id.eq_ignore_ascii_case(stem))) {
+        return Err(refused());
+    }
     let downloads = canonical(&paths.downloads())?;
     let in_downloads = |file: &Path| canonical(file).map(|f| f.parent() == Some(downloads.as_path()));
     let allowed = match (detect(app, &exe), step) {
