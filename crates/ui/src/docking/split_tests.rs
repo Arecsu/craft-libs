@@ -780,7 +780,7 @@ fn the_preview_fills_the_zone_under_the_pointer_and_no_result_rect() {
     assert_eq!(zone_outlines(&d).len(), 6);
     d.key(egui::Key::Escape);
 
-    // The dock-and-canvas arrangement keeps its filled half.
+    // The dock-and-canvas arrangement shows a line along the group's left edge instead.
     let mut d = DockDriver::new(editing(), Film::default());
     d.screen = Rect::from_min_size(Pos2::ZERO, SCREEN);
     d.area = d.screen;
@@ -788,7 +788,8 @@ fn the_preview_fills_the_zone_under_the_pointer_and_no_result_rect() {
     d.hold(tab(&d, INFO), pos2(timeline.left() + 8.0, timeline.center().y + 13.0));
     assert!(!d.filled_polygon(&zone_shape(timeline, 26.0, 40.0, Zone::Left).unwrap()));
     assert!(zone_outlines(&d).is_empty());
-    assert!(d.filled(zone_rect(timeline, Zone::Left).unwrap().shrink(1.0)));
+    assert!(!d.filled(zone_rect(timeline, Zone::Left).unwrap().shrink(1.0)));
+    assert!(d.filled(Rect::from_x_y_ranges(timeline.left()..=(timeline.left() + 4.0), timeline.y_range())));
 }
 
 #[test]

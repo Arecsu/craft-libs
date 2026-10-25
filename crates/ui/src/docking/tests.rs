@@ -303,8 +303,8 @@ fn pointer_targets_distinguish_reorder_center_split_and_occlusion() {
 }
 
 #[test]
-fn side_zones_are_40_pt_deep_or_a_quarter_of_the_bodys_smaller_side() {
-    let depth = DockStyle::default().zone_depth;
+fn side_edge_zones_are_40_pt_deep_or_a_quarter_of_the_bodys_smaller_side() {
+    let depth = SIDE_EDGE_ZONE_DEPTH;
     assert_eq!(depth, 40.0);
     // The inner corner of the left trapezoid is the depth of both bands.
     let inner = |rect: Rect| zone_shape(rect, 0.0, depth, Zone::Left).unwrap()[1] - rect.min;
@@ -334,6 +334,70 @@ fn side_zones_are_40_pt_deep_or_a_quarter_of_the_bodys_smaller_side() {
     // Without depth there are no sides.
     assert_eq!(drop_zone(rect, 0.0, 0.0, pos2(rect.left() + 1.0, rect.center().y)), Some(Zone::Center));
     assert!(zone_shape(rect, 0.0, 0.0, Zone::Left).is_none());
+}
+
+#[test]
+fn a_bodys_outer_thirds_are_its_sides_and_the_relatively_nearer_side_wins_at_a_corner() {
+    let fraction = DockStyle::default().side_zone_fraction;
+    assert!((fraction - 1.0 / 3.0).abs() < 1e-6);
+    // A 24 pt header over a 600 x 300 body.
+    let rect = Rect::from_min_size(pos2(10.0, 20.0), vec2(600.0, 324.0));
+    let body = Rect::from_min_max(pos2(10.0, 44.0), rect.max);
+    let zone = |p| body_zone(rect, 24.0, fraction, true, p);
+    let y = body.center().y;
+    assert_eq!(zone(pos2(body.left() + 199.0, y)), Some(Zone::Left));
+    assert_eq!(zone(pos2(body.left() + 201.0, y)), Some(Zone::Center));
+    assert_eq!(zone(pos2(body.right() - 199.0, y)), Some(Zone::Right));
+    assert_eq!(zone(pos2(body.center().x, body.top() + 99.0)), Some(Zone::Top));
+    assert_eq!(zone(pos2(body.center().x, body.top() + 101.0)), Some(Zone::Center));
+    assert_eq!(zone(pos2(body.center().x, body.bottom() - 99.0)), Some(Zone::Bottom));
+    assert_eq!(zone(pos2(body.left() + 2.0, rect.top() + 10.0)), Some(Zone::Center), "the header joins");
+    // In a corner: a quarter of the width from the left is further than a fifth of the height
+    // from the top, a tenth of the width nearer than three tenths of the height.
+    assert_eq!(zone(pos2(body.left() + 150.0, body.top() + 60.0)), Some(Zone::Top));
+    assert_eq!(zone(pos2(body.left() + 60.0, body.top() + 90.0)), Some(Zone::Left));
+    // Without a middle, the relatively nearest side takes every point.
+    let edges = |p| body_zone(rect, 24.0, fraction, false, p);
+    assert_eq!(edges(body.center() - vec2(10.0, 0.0)), Some(Zone::Left));
+    assert_eq!(edges(body.center() - vec2(0.0, 10.0)), Some(Zone::Top));
+    assert_eq!(edges(body.center() + vec2(0.0, 10.0)), Some(Zone::Bottom));
+    // No fraction: only the middle. Outside or invalid: nothing.
+    assert_eq!(body_zone(rect, 24.0, 0.0, true, pos2(body.left() + 1.0, y)), Some(Zone::Center));
+    assert!(body_zone(rect, 24.0, fraction, true, pos2(0.0, 0.0)).is_none());
+    assert!(body_zone(Rect::NOTHING, 24.0, fraction, true, pos2(0.0, 0.0)).is_none());
+}
+
+#[test]
+fn a_drop_beside_a_group_previews_a_line_along_its_edge_and_a_group_without_tabs_has_no_middle() {
+    let style = DockStyle::from_visuals(&egui::Visuals::dark());
+    let rule = style.zone_rule();
+    assert_eq!(rule, ZoneRule::Fraction { fraction: 1.0 / 3.0, line: 4.0 });
+    assert_eq!(DockStyle { side_edge_zones: true, ..style }.zone_rule(), ZoneRule::Depth(SIDE_EDGE_ZONE_DEPTH));
+    let rect = Rect::from_min_size(pos2(10.0, 20.0), vec2(300.0, 224.0));
+    let group = target(2, &[2, 3], rect);
+    let resolve = |at, group: &DropTarget<u32>| resolve_drop_by(&5, at, std::slice::from_ref(group), rule);
+    let left = resolve(pos2(20.0, 140.0), &group).unwrap();
+    assert_eq!(left.placement, Placement::Split(Zone::Left));
+    assert_eq!(left.preview, Rect::from_x_y_ranges(10.0..=14.0, rect.y_range()), "the group's whole left edge");
+    let bottom = resolve(pos2(160.0, 240.0), &group).unwrap();
+    assert_eq!(bottom.placement, Placement::Split(Zone::Bottom));
+    assert_eq!(bottom.preview, Rect::from_x_y_ranges(rect.x_range(), 240.0..=244.0));
+    let middle = resolve(pos2(160.0, 144.0), &group).unwrap();
+    assert_eq!((middle.placement, middle.preview), (Placement::Split(Zone::Center), rect));
+    // A canvas: its middle goes to the nearest edge, and its strip takes nothing.
+    let canvas = DropTarget { accepts_tabs: false, ..group };
+    assert_eq!(resolve(pos2(150.0, 144.0), &canvas).unwrap().placement, Placement::Split(Zone::Left));
+    assert!(resolve(pos2(90.0, 30.0), &canvas).is_none());
+}
+
+#[test]
+fn a_style_needs_a_drop_line_and_side_zones_of_at_most_half_the_body() {
+    let style = DockStyle::from_visuals(&egui::Visuals::dark());
+    assert!(style.valid());
+    assert!(DockStyle { side_zone_fraction: 0.0, ..style.clone() }.valid());
+    assert!(DockStyle { side_zone_fraction: 0.5, ..style.clone() }.valid());
+    assert!(!DockStyle { side_zone_fraction: 0.6, ..style.clone() }.valid());
+    assert!(!DockStyle { drop_line_width: 0.0, ..style }.valid());
 }
 
 #[test]

@@ -102,6 +102,8 @@ pub(super) struct Renderer<'a, P> {
     pub(super) targets: Vec<DropTarget<P>>,
     /// [D] Seams, group bands, column edges and new-dock bands, see [`crate::docking::targets::DockDrop`].
     pub(super) dock_targets: Vec<crate::docking::targets::DockDrop<P>>,
+    /// [D] The open groups of dock columns, whose body zones stack or make columns.
+    pub(super) dock_groups: Vec<dock::DockGroup<P>>,
     pub(super) owned_interactions: Vec<Id>,
     pub(super) output: DockOutput<P>,
     pub(super) frame: FrameState<P>,

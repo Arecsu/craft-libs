@@ -184,7 +184,10 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         std::mem::swap(&mut self.frame.windows, &mut surface.windows);
         let bounds = std::mem::replace(&mut self.float_bounds, surface.bounds);
         let blockers = std::mem::take(&mut self.blockers);
+        // A native window has no docks.
+        let groups = std::mem::take(&mut self.dock_groups);
         let result = f(self);
+        self.dock_groups = groups;
         std::mem::swap(&mut self.targets, &mut surface.targets);
         std::mem::swap(&mut self.dock_targets, &mut surface.dock_targets);
         std::mem::swap(&mut self.frame.windows, &mut surface.windows);

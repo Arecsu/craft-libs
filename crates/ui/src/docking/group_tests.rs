@@ -354,7 +354,7 @@ fn group_drop_on_a_frame_edge_splits_and_on_a_protected_canvas_floats() {
     let canvas = || TestContent { protected: vec![1], ..Default::default() };
     let area = Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 600.0));
     let mut d = Driver::with(frames(), TestContent::default(), area);
-    let out = d.drag(d.rect("drag-bar", 2).center(), pos2(20.0, 300.0));
+    let out = d.drag(d.rect("drag-bar", 2).center(), pos2(40.0, 300.0));
     assert!(matches!(moved_group(&out.actions), Some(Target::At { anchor: 1, placement: Placement::Split(Zone::Left) })), "{:?}", out.actions);
     let Some(Node::Split { first, second, .. }) = &d.layout.root else { panic!() };
     assert_eq!(**first, tabs(&[2, 3], 1));
@@ -362,7 +362,7 @@ fn group_drop_on_a_frame_edge_splits_and_on_a_protected_canvas_floats() {
 
     // A protected canvas takes nothing, at its center or its edge: no join, no split, no
     // preview; the group floats there.
-    for at in [pos2(150.0, 300.0), pos2(20.0, 300.0)] {
+    for at in [pos2(150.0, 300.0), pos2(40.0, 300.0)] {
         let mut d = Driver::with(frames(), canvas(), area);
         let out = d.drag(d.rect("drag-bar", 2).center(), at);
         assert!(matches!(moved_group(&out.actions), Some(Target::Float { .. })), "{:?}", out.actions);
