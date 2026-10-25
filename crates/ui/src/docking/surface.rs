@@ -64,11 +64,13 @@ pub struct DockStyle {
     /// bottom edges add a full-width row, a group's zones are [`Self::side_zone_fraction`] of its
     /// body, and every preview is a line or a tab outline.
     pub side_edge_zones: bool,
-    /// Which sides of a group that takes no tabs (a canvas), and of the layout's outer edge, take
-    /// a drop (all four). Without [`Self::side_edge_zones`] the outer left and right edges are
-    /// new docks, so only top and bottom apply there. A dock-column app whose palettes dock only
-    /// at the left and right sets [`crate::docking::Sides::NONE`] with [`Self::new_dock_zones`]
-    /// on. Not used with [`Self::side_edge_zones`]. Groups that take tabs keep all four sides.
+    /// Which sides of the layout's outer edge, and of a group that takes no tabs (a canvas)
+    /// without [`Self::new_dock_zones`], take a drop (all four). With [`Self::new_dock_zones`]
+    /// a canvas body takes no drop, and without [`Self::side_edge_zones`] the outer left and
+    /// right edges are new docks, so only top and bottom apply there. A dock-column app whose
+    /// palettes dock only at the left and right sets [`crate::docking::Sides::NONE`] with
+    /// [`Self::new_dock_zones`] on. Not used with [`Self::side_edge_zones`]. Groups that take
+    /// tabs keep all four sides.
     pub drop_edges: super::Sides,
     /// The share of a group's body, below the tab strip, that means "beside" on each side: of
     /// its width from the left and right edges, of its height from the top and bottom edges
@@ -81,8 +83,10 @@ pub struct DockStyle {
     /// zero). Other drops beside a group, column, dock or the layout's edge preview the rect the
     /// moved panels take. Border bands reach 4 pt past this line into a tab strip.
     pub drop_line_width: f32,
-    /// [D] The docked area's left and right edges, where no dock is yet, take a drop as a new
-    /// dock (see [`Self::new_dock_band`]).
+    /// [D] The docking profile. The docked area's left and right edges, where no dock is yet,
+    /// take a drop as a new dock (see [`Self::new_dock_band`]). Without
+    /// [`Self::side_edge_zones`], the body of a frame or floating group that takes no tabs (a
+    /// canvas) takes no drop: a release there floats as over no target.
     pub new_dock_zones: bool,
     /// [D] Height of the bar above each dock column. It drags the column and holds its »/« button.
     pub column_bar_height: f32,
@@ -237,10 +241,18 @@ impl DockStyle {
         }
     }
 
-    /// The canvas sides [`Self::drop_edges`] gives in this profile: all four with
+    /// The sides [`Self::drop_edges`] gives in this profile: all four with
     /// [`Self::side_edge_zones`].
     pub(super) fn drop_sides(&self) -> super::Sides {
         if self.side_edge_zones { super::Sides::ALL } else { self.drop_edges }
+    }
+
+    /// The sides of a frame or floating group that takes no tabs (a canvas) whose body takes a
+    /// drop: none in the docking profile ([`Self::new_dock_zones`] without
+    /// [`Self::side_edge_zones`]), where only the bands along borders dock beside it, else
+    /// [`Self::drop_sides`].
+    pub(super) fn canvas_sides(&self) -> super::Sides {
+        if self.side_edge_zones || !self.new_dock_zones { self.drop_sides() } else { super::Sides::NONE }
     }
 
     /// The outer edges that take a drop: all four with [`Self::side_edge_zones`], else the top

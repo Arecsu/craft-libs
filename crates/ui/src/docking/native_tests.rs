@@ -17,6 +17,8 @@ const ORIGIN: Pos2 = pos2(100.0, 50.0);
 struct Content {
     /// Panels that may not close.
     fixed: Vec<u32>,
+    /// The protected canvas that takes splits beside it, as PhotoCraft's does.
+    canvas: Option<u32>,
     /// Panels that stay in-window.
     in_window: Vec<u32>,
     /// Viewer panels: their windows are normal windows.
@@ -121,6 +123,9 @@ impl DockContent<u32> for Content {
     }
 
     fn permissions(&self, panel: &u32) -> Permissions {
+        if self.canvas == Some(*panel) {
+            return Permissions { accepts_splits: true, ..Permissions::PROTECTED };
+        }
         Permissions { closable: !self.fixed.contains(panel), ..Permissions::default() }
     }
 
@@ -980,6 +985,55 @@ fn a_native_windows_bar_docks_it_at_frame_edges_and_dock_lines_but_not_a_body_ce
     assert_eq!(window_move(&out), Some(&Target::At { anchor: 2, placement: Placement::Group { below: true, height: None } }), "{:?}", out.actions);
     assert!(d.layout.floating.is_empty());
     assert!(in_root(&d, 5) && in_root(&d, 6));
+}
+
+#[test]
+fn over_a_canvas_body_a_window_stays_floating_and_a_tab_floats_while_the_edge_bands_dock() {
+    // PhotoCraft: a dock column of [2] above [3, 4] beside canvas 0, which takes splits, and
+    // window [5, 6] floating.
+    let accent = Color32::from_rgb(250, 10, 200);
+    let dock = Node::Dock {
+        side: super::Side::Start,
+        columns: vec![super::Column::new(vec![super::Group::new(vec![2], 0), super::Group::new(vec![3, 4], 0)], 240.0)],
+    };
+    let root = Node::Split { axis: SplitAxis::Horizontal, size: SplitSize::FixedFirst(240.0), first: Box::new(dock), second: Box::new(tabs(&[0])) };
+    let layout = Layout { root: Some(root), floating: vec![Floating::single(vec![5, 6], 0, [300.0, 80.0, 240.0, 200.0])] };
+    let start = || {
+        DockDriver::new(layout.clone(), Content { canvas: Some(0), ..Content::default() })
+            .with_style(move |s| {
+                s.accent = accent;
+                s.float_hint = false;
+            })
+            .with_native_host(ORIGIN)
+    };
+    // The canvas spans x = 244 to 800 and the whole height: no tab strip.
+    for at in [pos2(520.0, 150.0), pos2(520.0, 450.0)] {
+        let mut d = start();
+        let before = accented(d.shapes(), accent);
+        let id = window(&d, 5).id;
+        d.window_step(id, vec![Event::PointerMoved(pos2(40.0, 9.0)), button(pos2(40.0, 9.0), true)]);
+        d.window_step(id, vec![Event::PointerMoved(pos2(60.0, 19.0))]);
+        let local = d.window_local(id, ORIGIN + at.to_vec2()).unwrap();
+        d.window_step(id, vec![Event::PointerMoved(local)]);
+        d.step(vec![]);
+        assert_eq!(accented(d.shapes(), accent), before, "{at:?}: no preview");
+        let out = d.window_step(id, vec![button(pos2(40.0, 9.0), false)]);
+        assert_eq!(window_move(&out), None, "{at:?}: {:?}", out.actions);
+        assert!(window(&d, 5).contains(&6), "{at:?}");
+    }
+    // A docked tab dropped there floats.
+    let mut d = start();
+    let tab = d.hit(&Hit::Tab(3)).unwrap().center();
+    let out = d.drag(tab, pos2(520.0, 450.0));
+    assert!(matches!(out.actions.as_slice(), [Action::Float { panel: 3, .. }]), "{:?}", out.actions);
+    // The window's right edge, where no dock is yet, and the bottom edge band beside the canvas
+    // still dock the window.
+    let mut d = start();
+    let out = drag_bar_to(&mut d, 5, pos2(795.0, 300.0));
+    assert_eq!(window_move(&out), Some(&Target::NewDock { side: super::Side::End }), "{:?}", out.actions);
+    let mut d = start();
+    let out = drag_bar_to(&mut d, 5, pos2(520.0, 590.0));
+    assert!(matches!(window_move(&out), Some(Target::At { placement: Placement::Edge(super::Zone::Bottom), .. })), "{:?}", out.actions);
 }
 
 #[test]

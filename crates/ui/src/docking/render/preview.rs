@@ -198,11 +198,11 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
     }
 
     /// [`crate::docking::resolve_drop_by`] with [`crate::docking::DockStyle::zone_rule`] and the
-    /// canvas sides of [`crate::docking::DockStyle::drop_edges`], where a split that would leave
-    /// a group without room becomes a join of the target group, or no target when the group
-    /// takes no tabs. A drop that would change only sizes is a no-op ([`Self::settled`]).
+    /// canvas sides of [`crate::docking::DockStyle::drop_edges`] (none in the docking profile),
+    /// where a split that would leave a group without room becomes a join of the target group,
+    /// or no target when the group takes no tabs. A drop that would change only sizes is a no-op ([`Self::settled`]).
     fn resolve_roomy(&self, panel: &P, pointer: Pos2, targets: &[DropTarget<P>], action: impl Fn(Target<P>) -> Action<P>) -> Option<DropProposal<P>> {
-        let proposal = resolve_drop_on(panel, pointer, targets, self.style.zone_rule(), self.style.drop_sides())?;
+        let proposal = resolve_drop_on(panel, pointer, targets, self.style.zone_rule(), self.style.canvas_sides())?;
         if !matches!(proposal.placement, Placement::Split(zone) if zone != Zone::Center) {
             return Some(self.settled(proposal, action));
         }
@@ -220,7 +220,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             pointer,
             std::slice::from_ref(&DropTarget { allow_splits: false, ..target.clone() }),
             self.style.zone_rule(),
-            self.style.drop_sides(),
+            self.style.canvas_sides(),
         )?;
         Some(self.settled(proposal, action))
     }

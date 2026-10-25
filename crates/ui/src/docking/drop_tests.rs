@@ -122,16 +122,17 @@ fn a_drop_on_a_groups_outer_third_docks_beside_it_with_its_rect_and_its_middle_j
 }
 
 #[test]
-fn a_group_that_takes_no_tabs_maps_its_whole_body_to_its_edges() {
+fn without_new_dock_zones_a_group_that_takes_no_tabs_maps_its_whole_body_to_its_edges() {
     let canvas = Permissions { accepts_tabs: false, ..Permissions::default() };
-    let d = driver(&[(1, canvas)]);
+    let start = || driver(&[(1, canvas)]).with_style(|style| style.new_dock_zones = false);
+    let d = start();
     let (body, rect) = group(&d, 1);
     for (zone, at) in [(Zone::Left, body.center() - vec2(10.0, 0.0)), (Zone::Top, body.center() - vec2(0.0, 10.0))] {
-        let out = previews_result(driver(&[(1, canvas)]), tab(&d, 3), at, |d| group(d, 3).1);
+        let out = previews_result(start(), tab(&d, 3), at, |d| group(d, 3).1);
         assert_eq!(out, vec![Action::Move { panel: 3, anchor: 1, placement: Placement::Split(zone) }], "{zone:?}");
     }
     // Its strip joins nothing.
-    let mut d = driver(&[(1, canvas)]);
+    let mut d = start();
     let out = d.drag(tab(&d, 3), pos2(rect.center().x, rect.top() + 13.0));
     assert!(!out.actions.iter().any(|a| matches!(a, Action::Move { anchor: 1, placement: Placement::Tab { .. }, .. })), "{:?}", out.actions);
 }
@@ -345,7 +346,7 @@ fn drop_edges_limit_the_outer_edges_and_the_canvas_sides() {
 }
 
 #[test]
-fn a_canvas_that_takes_splits_takes_them_only_on_its_drop_edges() {
+fn without_new_dock_zones_a_canvas_that_takes_splits_takes_them_only_on_its_drop_edges() {
     let beside = Permissions { accepts_splits: true, ..Permissions::PROTECTED };
     let d = canvas_driver(beside, |_| {});
     let (body, _) = group(&d, 0);
@@ -358,12 +359,20 @@ fn a_canvas_that_takes_splits_takes_them_only_on_its_drop_edges() {
         (Sides::NONE, [None, None]),
     ] {
         for (at, zone) in [low, high].into_iter().zip(zones) {
-            let mut d = canvas_driver(beside, move |style| style.drop_edges = edges);
+            let split_frames = move |style: &mut DockStyle| {
+                style.new_dock_zones = false;
+                style.drop_edges = edges;
+            };
+            let mut d = canvas_driver(beside, split_frames);
             let out = d.drag(tab(&d, 3), at);
             match zone {
                 Some(zone) => assert_eq!(out.actions, vec![Action::Move { panel: 3, anchor: 0, placement: Placement::Split(zone) }], "{edges:?}"),
                 None => assert!(!moves(&out), "{edges:?}: {:?}", out.actions),
             }
+            // With new dock zones the canvas body takes no drop on any side.
+            let mut d = canvas_driver(beside, move |style| style.drop_edges = edges);
+            let out = d.drag(tab(&d, 3), at);
+            assert!(!moves(&out), "{edges:?}: {:?}", out.actions);
         }
     }
 }
