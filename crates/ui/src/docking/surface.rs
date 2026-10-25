@@ -702,7 +702,8 @@ pub fn is_dragging<P: Clone + Send + Sync + 'static>(ctx: &Context, area_id: Id)
 
 /// Discard pending tab/group gestures, a native window's bar drag and an actively dragged
 /// renderer-owned control, in the main window now and in a native window when it next draws.
-/// Body/custom-header/menu gestures and other areas are untouched.
+/// Body/custom-header/menu gestures and other areas are untouched, except that an app drag in a
+/// panel body no longer reaches other OS windows (feature `native-windows`).
 /// Ownership is recorded as controls render; before an initial render or drag threshold there
 /// may be no active egui drag to cancel. Keyboard focus is unchanged. Nothing is restored from
 /// before the drag: floating and native windows go where the next layout drawn has them.
@@ -730,6 +731,21 @@ pub fn cancel_drag<P: Clone + Send + Sync + 'static>(ctx: &Context, area_id: Id)
     if owned {
         ctx.stop_dragging();
     }
+    #[cfg(feature = "native-windows")]
+    super::render::cancel_body_route(ctx, area_id);
+}
+
+/// Mark the app's drag in a panel body of the area `area_id` as one that carries something, so
+/// it reaches the window under the pointer (feature `native-windows`; elsewhere it does
+/// nothing). A drag with an egui drag-and-drop payload needs no call. Call it each frame while
+/// the drag lasts, from the panel body or before the area shows; a call starts the routing
+/// for this frame and the next, and a routing once started lasts until the drag ends. Drags
+/// that are never marked (sliders, scrollbars, text selection, canvas pans) stay in their window.
+pub fn route_app_drag(ctx: &Context, area_id: Id) {
+    #[cfg(feature = "native-windows")]
+    super::render::mark_app_drag(ctx, area_id);
+    #[cfg(not(feature = "native-windows"))]
+    let _ = (ctx, area_id);
 }
 
 /// One mutable application adapter owns bodies, menus, shaped text and per-panel policy,

@@ -104,6 +104,8 @@ pub(in crate::docking) struct Cross<P> {
     pub held: bool,
     /// The panel whose body is under the pointer in the native window drawing now.
     pub pointed: Option<P>,
+    /// The viewport of each native window drawn this frame.
+    pub viewports: Vec<(u64, egui::ViewportId)>,
 }
 
 impl<P> Default for Cross<P> {
@@ -122,6 +124,7 @@ impl<P> Default for Cross<P> {
             docks: false,
             held: false,
             pointed: None,
+            viewports: Vec::new(),
         }
     }
 }

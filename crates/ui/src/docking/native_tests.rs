@@ -33,6 +33,35 @@ struct Content {
     pressed: Vec<(u32, PointerButton)>,
     /// A panel body saw hovered or dropped files.
     saw_files: bool,
+    /// The panel with an app drag source, and where it was drawn.
+    source: Option<u32>,
+    /// How the source marks its drag as one that carries something.
+    marks: Marks,
+    source_rect: Option<Rect>,
+    /// The source's drag so far, and how often its drag stopped.
+    source_delta: egui::Vec2,
+    source_stopped: usize,
+    /// The source asks egui to run its window's pass again, once, the next time it draws.
+    discard_next: bool,
+    /// Panels whose bodies are app drop sites: where each saw the pointer, and where a release
+    /// came with the pointer inside.
+    drop_sites: Vec<u32>,
+    hovers: Vec<(u32, Pos2)>,
+    drops: Vec<(u32, Pos2)>,
+    /// Drop sites whose release found egui's drag-and-drop payload.
+    payload_drops: Vec<u32>,
+}
+
+/// How a test's app drag source marks its drag.
+#[derive(Default)]
+enum Marks {
+    /// It does not: a plain egui drag, such as a slider's.
+    #[default]
+    Nothing,
+    /// [`super::route_app_drag`] for this area, each frame while it drags.
+    Route(egui::Id),
+    /// An egui drag-and-drop payload, its panel.
+    Payload,
 }
 
 impl DockContent<u32> for Content {
@@ -51,6 +80,32 @@ impl DockContent<u32> for Content {
             let response = ui.button("Add");
             self.count += usize::from(response.clicked());
             self.counter_rect = Some(response.rect);
+        }
+        if self.source == Some(*panel) {
+            let response = ui.allocate_response(vec2(120.0, 60.0), egui::Sense::drag());
+            self.source_rect = Some(response.rect);
+            self.source_delta += response.drag_delta();
+            self.source_stopped += usize::from(response.drag_stopped());
+            if std::mem::take(&mut self.discard_next) {
+                ui.ctx().request_discard("the source's pass runs twice");
+            }
+            match self.marks {
+                Marks::Route(area) if response.dragged() => super::route_app_drag(ui.ctx(), area),
+                Marks::Payload => response.dnd_set_drag_payload(*panel),
+                _ => {}
+            }
+        }
+        // As apps' drop sites do: the pointer over the body, and a release there.
+        if self.drop_sites.contains(panel)
+            && let Some(pos) = ui.ctx().pointer_hover_pos().filter(|p| ui.max_rect().contains(*p))
+        {
+            self.hovers.push((*panel, pos));
+            if ui.input(|i| i.pointer.any_released()) {
+                self.drops.push((*panel, pos));
+                if egui::DragAndDrop::has_payload_of_type::<u32>(ui.ctx()) {
+                    self.payload_drops.push(*panel);
+                }
+            }
         }
         self.saw_files |= ui.input(|i| !i.raw.hovered_files.is_empty() || !i.raw.dropped_files.is_empty());
         if ui.rect_contains_pointer(ui.max_rect()) {
@@ -1823,4 +1878,280 @@ fn the_session_follows_winits_environment_rule() {
     assert_eq!(session(true, with(&["DISPLAY"])), Session::Other);
     assert_eq!(session(true, with(&[])), Session::Unknown);
     assert_eq!(session(false, with(&["WAYLAND_DISPLAY"])), Session::Other);
+}
+
+/// A driver whose panel `source` has an app drag source and whose panels `sites` are drop sites.
+fn app_drag(layout: Layout<u32>, source: u32, sites: &[u32]) -> DockDriver<u32, Content> {
+    let mut d = driver(layout);
+    (d.content.source, d.content.drop_sites, d.content.marks) = (Some(source), sites.to_vec(), Marks::Route(d.id));
+    d.settle();
+    d
+}
+
+#[allow(clippy::expect_used)]
+fn source(d: &DockDriver<u32, Content>) -> Pos2 {
+    d.content.source_rect.expect("source drawn").center()
+}
+
+#[test]
+fn an_app_drag_from_the_main_window_reaches_a_native_windows_panel() {
+    // Panel 3's frame lies under window [5, 6], which takes the drop.
+    let mut d = app_drag(layout(true), 1, &[3, 5]);
+    let id = window(&d, 5).id;
+    let local = pos2(120.0, 200.0);
+    let point = d.host().windows[&d.viewport(id)].rect.min + local.to_vec2() - ORIGIN.to_vec2();
+    d.hold(source(&d), point);
+    assert!(d.content.hovers.contains(&(5, local)), "{:?}", d.content.hovers);
+    d.release(point);
+    d.step(vec![]);
+    assert_eq!(d.content.drops, vec![(5, local)]);
+    assert!(!d.content.hovers.iter().any(|(panel, _)| *panel == 3), "{:?}", d.content.hovers);
+}
+
+#[test]
+fn a_stop_withdraws_a_routed_release_no_window_read_but_not_the_owners() {
+    let mut d = app_drag(layout(true), 5, &[1]);
+    let id = window(&d, 5).id;
+    let local = d.window_local(id, ORIGIN + vec2(100.0, 300.0)).unwrap();
+    d.window_hold(id, source(&d), local);
+    // The release is queued for the main window's next pass, and the drag is cancelled first.
+    d.window_release(id, local);
+    super::cancel_drag::<u32>(&d.ctx, d.id);
+    d.step(vec![]);
+    d.step(vec![]);
+    assert_eq!(d.content.drops, vec![]);
+    // The owner still gets its own release.
+    assert_eq!(d.content.source_stopped, 1);
+}
+
+#[test]
+fn a_plain_egui_drag_over_a_native_window_keeps_its_moves_and_is_not_routed() {
+    let mut d = app_drag(layout(true), 1, &[5]);
+    d.content.marks = Marks::Nothing;
+    let id = window(&d, 5).id;
+    let over = d.host().windows[&d.viewport(id)].rect.center() - ORIGIN.to_vec2();
+    let from = source(&d);
+    d.hold(from, over);
+    d.move_to(over + vec2(20.0, 10.0));
+    let moved = over + vec2(20.0, 10.0) - from;
+    assert!((d.content.source_delta - moved).length() < 0.01, "{:?}, not {moved:?}", d.content.source_delta);
+    d.release(over);
+    d.step(vec![]);
+    assert!(d.content.hovers.is_empty(), "{:?}", d.content.hovers);
+    assert!(d.content.drops.is_empty(), "{:?}", d.content.drops);
+    assert_eq!(d.content.source_stopped, 1);
+}
+
+#[test]
+fn an_egui_payload_reaches_a_window_drawn_before_the_owner() {
+    // The main window draws before the native window that owns the drag.
+    let mut d = app_drag(layout(true), 5, &[1]);
+    d.content.marks = Marks::Payload;
+    let id = window(&d, 5).id;
+    let local = d.window_local(id, ORIGIN + vec2(100.0, 300.0)).unwrap();
+    d.window_hold(id, source(&d), local);
+    d.window_release(id, local);
+    d.step(vec![]);
+    d.step(vec![]);
+    assert_eq!(d.content.payload_drops, vec![1]);
+    assert!(!egui::DragAndDrop::has_any_payload(&d.ctx));
+}
+
+#[test]
+fn an_owner_that_discards_its_release_pass_keeps_the_payload_for_the_target() {
+    let mut d = app_drag(layout(true), 5, &[1]);
+    d.content.marks = Marks::Payload;
+    let id = window(&d, 5).id;
+    let local = d.window_local(id, ORIGIN + vec2(100.0, 300.0)).unwrap();
+    d.window_hold(id, source(&d), local);
+    // The owner's pass that holds its release runs twice.
+    d.content.discard_next = true;
+    d.window_release(id, local);
+    d.step(vec![]);
+    d.step(vec![]);
+    assert_eq!(d.content.payload_drops, vec![1]);
+}
+
+#[test]
+fn pointer_events_after_a_held_release_wait_behind_it() {
+    let mut d = app_drag(layout(true), 1, &[5]);
+    let id = window(&d, 5).id;
+    let point = d.host().windows[&d.viewport(id)].rect.min + vec2(120.0, 200.0) - ORIGIN.to_vec2();
+    d.hold(source(&d), point);
+    let delta = d.content.source_delta;
+    // The release over the native window, then the pointer back on the source and a new press,
+    // in one input.
+    let at = source(&d);
+    d.step(vec![button(point, false), Event::PointerMoved(at), button(at, true)]);
+    assert_eq!(d.content.source_delta, delta, "no move after the release reaches the source's drag");
+    d.step(vec![]);
+    assert!(d.ctx.input(|i| i.pointer.primary_down()), "the new press outlives the held release");
+}
+
+#[test]
+fn the_owners_drag_stops_a_pass_after_its_release_over_another_window() {
+    let mut d = app_drag(layout(true), 1, &[5]);
+    let id = window(&d, 5).id;
+    let local = pos2(120.0, 200.0);
+    let point = d.host().windows[&d.viewport(id)].rect.min + local.to_vec2() - ORIGIN.to_vec2();
+    d.hold(source(&d), point);
+    d.release(point);
+    assert_eq!((d.content.drops.clone(), d.content.source_stopped), (vec![(5, local)], 0));
+    // The owner saw the pointer go, and holds its release and the pointer's going once.
+    assert_eq!(d.ctx.input(|i| i.pointer.hover_pos()), None);
+    let held = super::render::held_events(&d.ctx, egui::ViewportId::ROOT);
+    assert!(matches!(held.as_slice(), [Event::PointerButton { pressed: false, .. }, Event::PointerGone]), "{held:?}");
+    d.step(vec![]);
+    assert_eq!(d.content.source_stopped, 1);
+    assert_eq!(d.ctx.dragged_id(), None);
+}
+
+#[test]
+fn a_press_right_after_a_routed_release_outlives_the_held_release() {
+    let mut d = app_drag(layout(true), 1, &[5]);
+    let id = window(&d, 5).id;
+    let point = d.host().windows[&d.viewport(id)].rect.min + vec2(120.0, 200.0) - ORIGIN.to_vec2();
+    d.hold(source(&d), point);
+    d.release(point);
+    // The owner's held release comes before a press in its next input.
+    let at = source(&d);
+    d.step(vec![Event::PointerMoved(at), button(at, true)]);
+    assert!(d.ctx.input(|i| i.pointer.primary_down()));
+}
+
+#[test]
+fn a_routed_release_clicks_nothing_in_the_target() {
+    let mut d = app_drag(layout(true), 1, &[5]);
+    d.content.counter = Some(5);
+    d.step(vec![]);
+    let id = window(&d, 5).id;
+    let button = d.content.counter_rect.unwrap().center();
+    let point = d.host().windows[&d.viewport(id)].rect.min + button.to_vec2() - ORIGIN.to_vec2();
+    d.hold(source(&d), point);
+    d.release(point);
+    d.step(vec![]);
+    assert_eq!(d.content.drops, vec![(5, button)]);
+    assert_eq!(d.content.count, 0);
+}
+
+#[test]
+fn an_app_drag_from_a_native_window_reaches_the_main_window() {
+    let mut d = app_drag(layout(true), 5, &[1]);
+    let id = window(&d, 5).id;
+    // Frame [1, 2], left of the native window on the desktop.
+    let point = pos2(100.0, 300.0);
+    let local = d.window_local(id, ORIGIN + point.to_vec2()).unwrap();
+    d.window_hold(id, source(&d), local);
+    d.window_release(id, local);
+    d.step(vec![]);
+    d.step(vec![]);
+    assert_eq!(d.content.drops, vec![(1, point)]);
+    assert!(d.content.hovers.contains(&(1, point)), "{:?}", d.content.hovers);
+}
+
+#[test]
+fn an_app_drag_between_native_windows_drops_in_the_front_one() {
+    // Window [7] overlaps window [5, 6] at (550, 280) on the desktop; window [8] is apart.
+    let mut layout = layout(true);
+    layout.floating.push(Floating::single(vec![7], 0, [350.0, 150.0, 240.0, 150.0]));
+    layout.floating.push(Floating::single(vec![8], 0, [20.0, 420.0, 240.0, 150.0]));
+    let overlap = pos2(550.0, 280.0);
+    for front in [7, 5] {
+        let mut d = app_drag(layout.clone(), 8, &[5, 7]);
+        let viewport = d.viewport(window(&d, front).id);
+        d.host().focus = Some(viewport);
+        d.step(vec![]);
+        d.host().focus = Some(egui::ViewportId::ROOT);
+        d.step(vec![]);
+        let (owner, target) = (window(&d, 8).id, window(&d, front).id);
+        let local = d.window_local(owner, overlap).unwrap();
+        d.window_hold(owner, source(&d), local);
+        d.window_release(owner, local);
+        d.step(vec![]);
+        d.step(vec![]);
+        assert_eq!(d.content.drops, vec![(front, d.window_local(target, overlap).unwrap())], "front {front}");
+    }
+}
+
+#[test]
+fn an_app_drag_released_outside_every_window_drops_nowhere() {
+    let mut d = app_drag(layout(true), 1, &[5]);
+    let id = window(&d, 5).id;
+    let over = d.host().windows[&d.viewport(id)].rect.center() - ORIGIN.to_vec2();
+    d.hold(source(&d), over);
+    assert!(d.content.hovers.iter().any(|(panel, _)| *panel == 5), "{:?}", d.content.hovers);
+    // Left of the main window, over no window of the app: the native window sees the pointer go.
+    let out = pos2(-60.0, 120.0);
+    d.move_to(out);
+    d.content.hovers.clear();
+    d.move_to(out);
+    d.release(out);
+    d.step(vec![]);
+    assert!(d.content.hovers.is_empty(), "{:?}", d.content.hovers);
+    assert!(d.content.drops.is_empty(), "{:?}", d.content.drops);
+}
+
+/// Hold an app drag from panel 1 over window [5, 6] and release it there.
+fn drag_onto_window(d: &mut DockDriver<u32, Content>) {
+    let id = window(d, 5).id;
+    let over = d.host().windows[&d.viewport(id)].rect.center() - ORIGIN.to_vec2();
+    d.hold(source(d), over);
+    d.release(over);
+    d.step(vec![]);
+    d.step(vec![]);
+}
+
+#[test]
+fn no_app_drag_is_routed_where_windows_report_no_positions() {
+    let mut d = app_drag(layout(true), 1, &[5]);
+    d.host().no_position = true;
+    d.step(vec![]);
+    drag_onto_window(&mut d);
+    assert!(d.content.hovers.is_empty(), "{:?}", d.content.hovers);
+    assert!(d.content.drops.is_empty(), "{:?}", d.content.drops);
+}
+
+#[test]
+fn a_blocked_native_window_gets_no_app_drag() {
+    let mut d = app_drag(layout(true), 1, &[5]);
+    d.input_blocked = true;
+    d.settle();
+    drag_onto_window(&mut d);
+    assert!(d.content.hovers.is_empty(), "{:?}", d.content.hovers);
+    assert!(d.content.drops.is_empty(), "{:?}", d.content.drops);
+}
+
+#[test]
+fn escape_and_cancel_drag_end_the_routing_of_an_app_drag() {
+    for cancel in [false, true] {
+        let mut d = app_drag(layout(true), 1, &[5]);
+        let id = window(&d, 5).id;
+        let over = d.host().windows[&d.viewport(id)].rect.center() - ORIGIN.to_vec2();
+        d.hold(source(&d), over);
+        assert!(!d.content.hovers.is_empty(), "cancel {cancel}");
+        if cancel {
+            super::cancel_drag::<u32>(&d.ctx, d.id);
+            d.step(vec![]);
+        } else {
+            d.key(Key::Escape);
+        }
+        d.content.hovers.clear();
+        d.move_to(over);
+        d.release(over);
+        d.step(vec![]);
+        assert!(d.content.hovers.is_empty(), "cancel {cancel}: {:?}", d.content.hovers);
+        assert!(d.content.drops.is_empty(), "cancel {cancel}: {:?}", d.content.drops);
+    }
+}
+
+#[test]
+fn a_tab_drag_onto_a_native_window_is_no_app_drag() {
+    let mut d = app_drag(layout(true), 1, &[5]);
+    let id = window(&d, 5).id;
+    let over = d.host().windows[&d.viewport(id)].rect.center() - ORIGIN.to_vec2();
+    let tab = d.hit(&Hit::Tab(1)).unwrap().center();
+    let out = d.drag(tab, over);
+    d.step(vec![]);
+    assert!(matches!(out.actions.as_slice(), [Action::Move { panel: 1, anchor: 5 | 6, .. }]), "{:?}", out.actions);
+    assert!(d.content.drops.is_empty(), "{:?}", d.content.drops);
 }

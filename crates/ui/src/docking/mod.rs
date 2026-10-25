@@ -32,7 +32,7 @@ pub use model::{Action, DockError, Floating, Layout, Location, MAX_DEPTH, MAX_PA
 pub use render::{close_flyout, flyout, open_flyout};
 pub use surface::{
     DockArea, DockContent, DockEvent, DockHeights, DockOutput, DockStyle, DropFeedback, DropRequest, FloatSpace, HidePanels, PanelLimits,
-    WindowFiles, WindowKind, begin_drag, cancel_drag, float_space, is_dragging,
+    WindowFiles, WindowKind, begin_drag, cancel_drag, float_space, is_dragging, route_app_drag,
 };
 pub use targets::{DropProposal, DropTarget, drop_zone, resolve_drop, tab_insertion_marker, zone_rect, zone_shape};
 pub use workspace::Workspace;

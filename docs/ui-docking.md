@@ -511,7 +511,8 @@ windows from the first frame. `DockArea::native_windows(bool)` overrides the cho
   shown panel, since the window system may send no pointer moves during a file drag), the
   pointer's last position in the window, and the window's `hovered_files` and
   `dropped_files`. Files on the main window stay in its own `RawInput`.
-- **Drags.** Tabs, groups and whole windows drag between the app's OS windows.
+- **Drags.** Tabs, groups and whole windows drag between the app's OS windows, and the app's
+  own drags in panel bodies reach the window under the pointer.
   - *Ownership.* The window where the button went down owns the drag: the window system sends it
     the pointer's moves and the release while the button is held, inside the window or not. So
     the pointer leaving a window (`PointerGone`) is not a release. A drag ends on release,
@@ -554,6 +555,41 @@ windows from the first frame. `DockArea::native_windows(bool)` overrides the cho
     works inside its own window, and a release outside it floats a new window that the
     compositor places. Moving a window hands the move to the
     compositor, which never docks it.
+  - *App drags in panel bodies.* A drag the app starts in a panel body can reach the window
+    under the pointer, so a drop site there works as it does inside one window.
+    - *Which drags.* An egui drag of one of the app's widgets, pressed with the primary button
+      in a panel body, that carries something: egui's `DragAndDrop` holds a payload
+      (`dnd_set_drag_payload`), or the app calls `docking::route_app_drag(ctx, area_id)` each
+      frame while the drag lasts, from the body or before the area shows. An app that keeps its
+      payload in the context's data makes that call. Other drags (sliders, scrollbars, text
+      selection, canvas pans) stay in their window and keep getting its pointer. A call counts
+      for its frame and the next; once routing starts, it lasts until the drag ends.
+    - *Events.* While the drag lasts, the owner's pointer moves over another of the app's
+      windows (found as for tab drags, front window first) go to that window in its own
+      coordinates: `PointerMoved` while the pointer is over it, `PointerGone` when it leaves,
+      and the release as a primary `PointerButton` with `pressed: false`. That window sees
+      `pointer_hover_pos` and `any_released` as if the window system had sent them. It sees no
+      press, so `any_down` stays false there and nothing in it is clicked. The owner sees the
+      pointer gone while it is over another window, so its panels under a palette see no hover
+      and no drop.
+    - *Input path.* Events go in through the area's egui input plugin, before any widget reads
+      the input; the app calls nothing more. In a native window this runs before the app's
+      `native_input_hook`. eframe runs the main window's `App::raw_input_hook` earlier, so that
+      hook sees the main window's input without the routed events.
+    - *Release timing.* A window drawn after the owner in the same pass gets the events in that
+      pass (from the main window, every native window does). The main window, and a native
+      window drawn before the owner, get them on the next pass, which is requested. When the
+      release goes to another window, the owner gets its own release, and the pointer events
+      that came after it, in the main window's next pass (a rerun of a discarded pass does not
+      count), so its drag stops (`drag_stopped`) then. egui clears a `DragAndDrop` payload when the owner sees the
+      release, so the target always reads its release while the payload is there. An app that
+      keeps its own payload clears it no earlier than the owner's release.
+    - *Limits.* Nothing is routed where desktop positions are unknown (Wayland,
+      `native_windows(false)`, embedded viewports) or while input is blocked. Escape in any of
+      the app's windows, a focus loss, `cancel_drag` and a replaced layout stop the routing:
+      the window under the pointer sees it go and gets no release it has not read yet. The drag
+      goes on in its own window until the button comes up, and the owner still gets its
+      release.
 
 On the web and wherever egui embeds viewports, nothing changes: floating windows stay in the
 page at their in-window rect, `native` and the monitor fields are kept but unused, the input

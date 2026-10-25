@@ -7,6 +7,8 @@ use crate::layout::{ResizeHandle, ResizeHandleStyle, SplitAxis};
 use super::{Action, DockContent, DockOutput, DockStyle, DropTarget, Layout, Node, PanelLimits, Permissions, dock_model::Place};
 
 #[cfg(feature = "native-windows")]
+mod body_drag;
+#[cfg(feature = "native-windows")]
 mod cross;
 mod dock;
 mod floating;
@@ -22,6 +24,10 @@ pub(in crate::docking) use {
     native::{APPKIT_CORNER, MACOS_CLOSE, Session, appkit_resize_areas, close_rects, floats_shown, resize_bands, session, wayland},
 };
 
+#[cfg(all(test, feature = "native-windows"))]
+pub(in crate::docking) use body_drag::held_events;
+#[cfg(feature = "native-windows")]
+pub(in crate::docking) use body_drag::{cancel_body_route, mark_app_drag};
 #[cfg(feature = "native-windows")]
 pub(in crate::docking) use native::{InputHook, set_input_hook};
 
@@ -371,6 +377,11 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         // Any button: a canvas pans with the middle button and opens menus with the secondary.
         if child.rect_contains_pointer(rect) && child.input(|i| i.pointer.any_pressed()) {
             self.output.focused = Some(panel.clone());
+            #[cfg(feature = "native-windows")]
+            if let Some(press) = child.input(|i| i.pointer.press_origin()) {
+                let key = body_drag::body_press_key(self.id, child.ctx().viewport_id());
+                child.ctx().data_mut(|d| d.insert_temp(key, press));
+            }
         }
         #[cfg(feature = "native-windows")]
         if child.rect_contains_pointer(rect) {
