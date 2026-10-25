@@ -668,6 +668,18 @@ pub fn take_failure(paths: &Paths) -> Option<String> {
     Some(error)
 }
 
+/// Whether `exe` is named like this app's own executable (case-insensitive, any of its ids).
+#[cfg(windows)]
+fn is_own_executable(app: &App, exe: &Path) -> bool {
+    exe.file_stem().and_then(|stem| stem.to_str()).is_some_and(|stem| app.stems().any(|id| id.eq_ignore_ascii_case(stem)))
+}
+
+/// Refuses an executable that isn't this app's own, as the helper would.
+#[cfg(windows)]
+fn own_executable(app: &App, exe: &Path) -> Result<(), String> {
+    if is_own_executable(app, exe) { Ok(()) } else { Err(format!("the update helper only finishes {}'s own update", app.name)) }
+}
+
 /// Checks, while the app still runs and can show the error, what the helper checks before
 /// it installs: this program, the installed exe and the new MSI are signed by one publisher, and
 /// the helper finds the cache in `paths` that holds its copy, the download and the staging folder.
@@ -675,10 +687,13 @@ pub fn take_failure(paths: &Paths) -> Option<String> {
 fn windows_precheck(app: &App, install: &Install, paths: &Paths, download: &Path) -> Result<(), String> {
     let me = std::env::current_exe().map_err(|e| format!("couldn't find this program ({e})"))?;
     match install {
-        Install::Msi(exe) => {
-            signed_like(app, &me, exe).and_then(|()| signed_like(app, &me, download)).and_then(|()| same_cache_as_helper(app, paths, exe))
+        Install::Msi(exe) => signed_like(app, &me, exe)
+            .and_then(|()| signed_like(app, &me, download))
+            .and_then(|()| own_executable(app, exe))
+            .and_then(|()| same_cache_as_helper(app, paths, exe)),
+        Install::Portable(exe) | Install::Standalone(exe) => {
+            signed_like(app, &me, exe).and_then(|()| own_executable(app, exe)).and_then(|()| same_cache_as_helper(app, paths, exe))
         }
-        Install::Portable(exe) | Install::Standalone(exe) => signed_like(app, &me, exe).and_then(|()| same_cache_as_helper(app, paths, exe)),
         _ => Ok(()),
     }
 }
@@ -730,7 +745,7 @@ fn check_helper(app: &App, me: &Path, paths: &Paths, exe: &Path, step: &Finish) 
     }
     let exe = canonical(exe)?;
     // Whatever the folder, the program to restart is this app's own, never another executable.
-    if !exe.file_stem().and_then(|stem| stem.to_str()).is_some_and(|stem| app.stems().any(|id| id.eq_ignore_ascii_case(stem))) {
+    if !is_own_executable(app, &exe) {
         return Err(refused());
     }
     let downloads = canonical(&paths.downloads())?;
