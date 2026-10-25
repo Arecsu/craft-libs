@@ -1711,6 +1711,50 @@ fn a_focused_field_and_a_held_press_stay_inert_across_a_block() {
 }
 
 #[test]
+fn blocking_input_hands_focus_from_a_native_window_to_the_main_window() {
+    let focus_main = |d: &DockDriver<u32, Content>| {
+        d.host().commands.iter().filter(|(v, c)| *v == egui::ViewportId::ROOT && matches!(c, ViewportCommand::Focus)).count()
+    };
+    let steps = |d: &mut DockDriver<u32, Content>, n: usize| {
+        for _ in 0..n {
+            d.step(vec![]);
+        }
+    };
+    let focused_float = || {
+        let mut d = blocked_driver();
+        let viewport = d.viewport(id_of(&d));
+        d.host().focus = Some(viewport);
+        d.step(vec![]);
+        d.input_blocked = true;
+        d
+    };
+    // A dialog opened from a floating panel needs the keys there, in the main window: once,
+    // after a short wait.
+    let mut d = focused_float();
+    steps(&mut d, 2);
+    assert_eq!(focus_main(&d), 0, "not yet: an OS dialog may still take focus");
+    steps(&mut d, 30);
+    assert_eq!(focus_main(&d), 1);
+    // An OS dialog took focus meanwhile: no window of the area has it, so nothing is sent.
+    let mut d = focused_float();
+    d.step(vec![]);
+    d.host().focus = None;
+    steps(&mut d, 30);
+    assert_eq!(focus_main(&d), 0);
+    // Blocking ended before the wait was over.
+    let mut d = focused_float();
+    d.step(vec![]);
+    d.input_blocked = false;
+    steps(&mut d, 30);
+    assert_eq!(focus_main(&d), 0);
+    // With the main window focused already, nothing is sent.
+    let mut d = blocked_driver();
+    d.input_blocked = true;
+    steps(&mut d, 30);
+    assert_eq!(focus_main(&d), 0);
+}
+
+#[test]
 fn blocking_input_cancels_a_drag_in_progress() {
     // A tab drag a native window owns.
     let mut d = blocked_driver();

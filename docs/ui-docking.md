@@ -491,8 +491,12 @@ windows from the first frame. `DockArea::native_windows(bool)` overrides the cho
     main window is raised last, in front of the normal windows and of a palette the user
     clicked.
   - *Edges.* Turning blocking on cancels a drag in progress, and a widget of a native window
-    loses keyboard focus. A zoom gesture still shows in egui's `InputState::zoom_delta`, which
-    cannot be cleared; a widget that zooms only while hovered ignores it. egui smooths wheel
+    loses keyboard focus. If a native window has the OS keyboard focus then (the modal was
+    opened from it, say by a double-click in a floating panel) and still has it 0.2 s later,
+    the main window gets `ViewportCommand::Focus`, so the modal gets the keys. The wait lets an
+    OS dialog opened with the modal (a file dialog) take focus first; then nothing is sent. A
+    zoom gesture still shows in egui's `InputState::zoom_delta`, which cannot be cleared; a
+    widget that zooms only while hovered ignores it. egui smooths wheel
     scrolling, so a scroll area in a native window may still scroll for about 100 ms after
     blocking ends, with the remainder of a wheel turn made just before it began.
   - Floating windows drawn in the main window need nothing: the modal covers them.

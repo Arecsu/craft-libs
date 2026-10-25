@@ -1136,9 +1136,12 @@ impl<'a, P: Clone + Eq + Hash + Debug + Send + Sync + 'static> DockArea<'a, P> {
         // Blocking starts while the pointer may be down: a drag that went on would act on its
         // release, under the modal.
         let blocked_key = self.id.with("input-blocked");
-        if self.input_blocked && !ui.ctx().data(|d| d.get_temp::<bool>(blocked_key).unwrap_or(false)) {
+        let starts = self.input_blocked && !ui.ctx().data(|d| d.get_temp::<bool>(blocked_key).unwrap_or(false));
+        if starts {
             cancel_drag::<P>(ui.ctx(), self.id);
         }
+        #[cfg(feature = "native-windows")]
+        super::render::focus_main_from_native(ui.ctx(), self.id, layout, self.input_blocked, starts);
         ui.ctx().data_mut(|d| d.insert_temp(blocked_key, self.input_blocked));
         cancel_drag_if_replaced(ui.ctx(), self.id, layout);
         release_moved_tab_focus(ui.ctx(), self.id, layout);
