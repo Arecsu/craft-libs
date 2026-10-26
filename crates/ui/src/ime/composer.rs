@@ -115,9 +115,10 @@ pub struct Composer {
     interrupt: bool,
     /// The composer ended a composition the IME may still hold, for [`Self::interrupted`].
     interrupted: bool,
-    /// The pass [`Self::interrupted`] is for, and the pass of the composer's last IME output.
+    /// The pass [`Self::interrupted`] is for, and the viewport and pass of the composer's last
+    /// IME output.
     pass: Option<u64>,
-    output_pass: Option<u64>,
+    output_pass: Option<(egui::ViewportId, u64)>,
     on: bool,
     /// The IME context's owner, as egui's `IMEOutput::owner`.
     owner: Id,
@@ -210,8 +211,12 @@ impl Composer {
         if !editing || ctx.text_edit_focused() {
             self.on = false;
             self.context.observe(ctx.viewport_id(), None);
-            if self.output_pass == Some(pass) && !ctx.text_edit_focused() {
-                ctx.output_mut(|o| o.ime = None);
+            if self.output_pass == Some((ctx.viewport_id(), pass)) {
+                if super::window::recording(ctx) {
+                    super::window::withdraw(ctx, self.owner);
+                } else if !ctx.text_edit_focused() {
+                    ctx.output_mut(|o| o.ime = None);
+                }
             }
             let time = ctx.input(|i| i.time);
             let kept = self.end_at(time);
@@ -510,9 +515,9 @@ impl Composer {
 
     fn write_output(&mut self, ctx: &Context) {
         let interrupt = std::mem::take(&mut self.interrupt);
-        self.output_pass = Some(ctx.cumulative_pass_nr());
-        let rect = self.caret.unwrap_or(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1.0, 1.0)));
         let viewport = ctx.viewport_id();
+        self.output_pass = Some((viewport, ctx.cumulative_pass_nr()));
+        let rect = self.caret.unwrap_or(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1.0, 1.0)));
         let observation =
             ImeObservation::new(ctx.cumulative_frame_nr_for(viewport), ctx.cumulative_pass_nr_for(viewport), ImeTarget::new(self.owner, 0))
                 .purpose(self.purpose);
@@ -520,14 +525,20 @@ impl Composer {
         let Some(context) = self.context.observe(viewport, Some(observation)) else {
             return;
         };
+        let mut ime = IMEOutput::new(context.owner, context.context_generation, context.purpose, rect, rect);
+        ime.should_interrupt_composition = interrupt;
+        ime.change_cause = context.change_cause;
+        ime.surrounding_text = context.surrounding_text;
+        // In a native floating window docking publishes the descriptor after the window's last
+        // body (see `window.rs`).
+        if super::window::recording(ctx) {
+            super::window::record(ctx, ime);
+            return;
+        }
         // egui-winit turns the IME on only in passes that set `ime`.
         ctx.output_mut(|o| {
             // A later write in the same pass (the caret after edits) keeps the interrupt.
-            let interrupt = interrupt || o.ime.as_ref().is_some_and(|ime| ime.should_interrupt_composition);
-            let mut ime = IMEOutput::new(context.owner, context.context_generation, context.purpose, rect, rect);
-            ime.should_interrupt_composition = interrupt;
-            ime.change_cause = context.change_cause;
-            ime.surrounding_text = context.surrounding_text;
+            ime.should_interrupt_composition |= o.ime.as_ref().is_some_and(|ime| ime.should_interrupt_composition);
             o.ime = Some(ime);
         });
     }

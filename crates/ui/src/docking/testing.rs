@@ -64,6 +64,7 @@ pub struct DockDriver<P, C> {
     input_hook: Option<InputHook>,
     style: Option<StyleFn>,
     shapes: Vec<ClippedShape>,
+    ime: Option<egui::output::IMEOutput>,
     time: f64,
 }
 
@@ -96,6 +97,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static, C: DockContent<P>> Do
             input_hook: None,
             style: None,
             shapes: Vec::new(),
+            ime: None,
             time: 0.0,
         };
         driver.settle();
@@ -191,6 +193,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static, C: DockContent<P>> Do
             host.land();
         }
         self.shapes = full.shapes;
+        self.ime = full.platform_output.ime;
         output
     }
 
@@ -374,6 +377,11 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static, C: DockContent<P>> Do
         &self.shapes
     }
 
+    /// The IME descriptor the main window's last frame published.
+    pub fn ime(&self) -> Option<&egui::output::IMEOutput> {
+        self.ime.as_ref()
+    }
+
     /// Whether the last frame filled `rect` (an insertion line or a split preview).
     pub fn filled(&self, rect: Rect) -> bool {
         self.shapes.iter().any(|clipped| match &clipped.shape {
@@ -471,6 +479,8 @@ pub struct HostWindow {
     pub dropped_files: Vec<egui::DroppedFileHandle>,
     /// Shapes of its last frame.
     pub shapes: Vec<ClippedShape>,
+    /// The IME descriptor its last frame published.
+    pub ime: Option<egui::output::IMEOutput>,
     /// Where it reports its content while the window system moves it.
     reported: Option<Pos2>,
     /// The last pointer position it was given, in its coordinates.
@@ -568,6 +578,7 @@ impl NativeHost {
                 hovered_files: Vec::new(),
                 dropped_files: Vec::new(),
                 shapes: Vec::new(),
+                ime: None,
                 reported: None,
                 pointer: None,
             });
@@ -599,6 +610,7 @@ impl NativeHost {
         host.apply(&full);
         if let Some(window) = host.windows.get_mut(&id) {
             window.shapes = full.shapes;
+            window.ime = full.platform_output.ime;
         }
     }
 

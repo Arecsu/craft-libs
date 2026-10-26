@@ -40,6 +40,11 @@
 //! [`Composer::interrupted`] says when the platform IME should drop its marked text, for hosts
 //! that talk to it directly.
 //!
+//! An editor in a panel body of a native floating window ([`crate::docking`], feature
+//! `native-windows`) uses its composer the same way. The window is an egui pass of its own:
+//! there the composer records its descriptor, and docking publishes it once, after the
+//! window's last body, so another body drawn after the editor's cannot clear it.
+//!
 //! The composer covers what the apps each handled on their own:
 //!
 //! - Events stay in the order the platform sent them, so a Telex Backspace that replaces a
@@ -66,6 +71,7 @@
 //! winit and are fixed there; the composer doesn't work around them.
 
 mod composer;
+pub(crate) mod window;
 
 pub use composer::{Composer, Edit, Preedit, Processed, surrounding_chars};
 
