@@ -151,8 +151,17 @@ impl Lang {
         let words: Vec<&str> = l.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
         let first = *words.first()?;
         let code = match locale_language(&words) {
-            Some("en") => return Some(Lang::English),
-            Some(code) => <[u8; 2]>::try_from(code.as_bytes()).ok()?,
+            Some((code, script)) => {
+                let code = <[u8; 2]>::try_from(code.as_bytes()).ok()?;
+                // Patterns for one script find nothing in another: `sr-Latn` has none.
+                if script.is_some_and(|script| script != pattern_script(code)) {
+                    return None;
+                }
+                if code == *b"en" {
+                    return Some(Lang::English);
+                }
+                code
+            }
             None if first == "english" => return Some(Lang::English),
             None => LANGUAGES.iter().find(|(name, _)| *name == first)?.1,
         };
@@ -160,10 +169,30 @@ impl Lang {
     }
 }
 
-/// The language of a locale code split into lowercase `words`: a language (2 or 3 letters), then
-/// optionally a script (4 letters), a region (2 letters or 3 digits) and a reform year (4 digits),
-/// in that order.
-fn locale_language<'a>(words: &[&'a str]) -> Option<&'a str> {
+/// The script of hypher's patterns for the language `code`, lowercase, as its documentation
+/// lists them.
+fn pattern_script(code: [u8; 2]) -> &'static str {
+    match &code {
+        b"as" | b"bn" => "beng",
+        b"be" | b"bg" | b"mn" | b"ru" | b"sr" | b"uk" => "cyrl",
+        b"hi" | b"mr" | b"sa" => "deva",
+        b"ka" => "geor",
+        b"el" => "grek",
+        b"gu" => "gujr",
+        b"pa" => "guru",
+        b"kn" => "knda",
+        b"ml" => "mlym",
+        b"or" => "orya",
+        b"ta" => "taml",
+        b"te" => "telu",
+        _ => "latn",
+    }
+}
+
+/// The language and script of a locale code split into lowercase `words`: a language (2 or 3
+/// letters), then optionally a script (4 letters), a region (2 letters or 3 digits) and a reform
+/// year (4 digits), in that order.
+fn locale_language<'a>(words: &[&'a str]) -> Option<(&'a str, Option<&'a str>)> {
     fn letters(w: &str, n: std::ops::RangeInclusive<usize>) -> bool {
         n.contains(&w.len()) && w.bytes().all(|b| b.is_ascii_lowercase())
     }
@@ -174,17 +203,20 @@ fn locale_language<'a>(words: &[&'a str]) -> Option<&'a str> {
     if !letters(lang, 2..=3) {
         return None;
     }
-    let script = |w: &str| letters(w, 4..=4);
+    let script = rest.first().copied().filter(|w| letters(w, 4..=4));
+    if script.is_some() {
+        rest = &rest[1..];
+    }
     let region = |w: &str| letters(w, 2..=2) || digits(w, 3);
     let year = |w: &str| digits(w, 4);
-    for subtag in [script as fn(&str) -> bool, region, year] {
+    for subtag in [region as fn(&str) -> bool, year] {
         if let Some((&w, tail)) = rest.split_first()
             && subtag(w)
         {
             rest = tail;
         }
     }
-    rest.is_empty().then_some(lang)
+    rest.is_empty().then_some((lang, script))
 }
 
 /// Where a word's break points came from.
