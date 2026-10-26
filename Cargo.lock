@@ -853,6 +853,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-menu"
+version = "0.1.0"
+dependencies = [
+ "craft-keymap",
+ "craft-quit",
+ "egui",
+ "muda",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+]
+
+[[package]]
 name = "craft-pdf"
 version = "0.1.0"
 dependencies = [
