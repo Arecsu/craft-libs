@@ -181,8 +181,9 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             for (below, ys, line) in [(false, upper_top..=middle, rect.top()), (true, middle..=lower_bottom, rect.bottom())] {
                 let band = Rect::from_x_y_ranges(xs, ys).intersect(view);
                 if usable(band) {
-                    let line = horizontal_line(line.clamp(view.top() + 2.0, view.bottom() - 2.0), xs);
-                    self.dock_targets.push(DockDrop { target: DockTarget::GroupBand { anchor: anchor.clone(), below }, band, line });
+                    let width = self.style.drop_line_width;
+                    let line = horizontal_line(line.clamp(view.top() + width * 0.5, view.bottom() - width * 0.5), xs, width);
+                    self.dock_targets.push(DockDrop { target: DockTarget::GroupBand { anchor: anchor.clone(), below }, band, line, outer: false });
                 }
             }
         }
@@ -199,7 +200,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         let height = group.height.filter(|h| h.is_finite()).unwrap_or(FLYOUT_HEIGHT);
         let source = Rect::from_min_size(pos2(grip.left(), top), vec2(width.max(self.style.min_pane), height.max(self.style.tab_height)));
         self.record_float(&group.panels, vec2(grip.width(), self.row_height()), source.size());
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &self.style.move_group_label));
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), &self.style.move_group_label));
         if movable && response.drag_started() {
             let origin = ui.input(|i| i.pointer.press_origin()).or_else(|| ui.ctx().pointer_interact_pos()).unwrap_or(grip.center());
             let drag = GroupDrag {
@@ -223,7 +224,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         let response = ui.interact(cell, self.id.with(("icon", panel)), if movable { Sense::click_and_drag() } else { Sense::click() });
         self.register_interaction(ui.ctx(), response.id);
         let current = showing == Some(panel);
-        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), current, &label));
+        response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), current, &label));
         let painter = ui.painter().with_clip_rect(cell.intersect(ui.clip_rect()));
         if current || response.hovered() {
             painter.rect_filled(cell.shrink(2.0), 3.0, self.style.active_background);
@@ -275,7 +276,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         let text = self.content.action_label(ui, &logical, &self.style.font, self.style.text);
         let mut on = self.iconic.auto_collapse;
         let response = ui.add(egui::Checkbox::new(&mut on, text));
-        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), self.iconic.auto_collapse, &logical));
+        response.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, ui.is_enabled(), self.iconic.auto_collapse, &logical));
         if response.clicked() {
             ui.close();
         }

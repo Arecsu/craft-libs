@@ -4,14 +4,19 @@
 //! a title bar (title, ▾ menu, ×) and a resizable inner edge. Call it before the app's
 //! `CentralPanel`; the document never becomes a panel. The app owns which panes are open and
 //! where they are: the host takes the open list and each pane's [`PaneState`] every frame and
-//! returns [`PaneRequest`]s for the app to run through its own commands. Docking chrome
-//! ([`crate::docking::chrome`]) draws the floating frames and title bars.
+//! returns [`PaneRequest`]s for the app to run through its own commands. The order of `open`
+//! is the order of the panes on each edge, the first outermost; a drop that picks a position on
+//! an edge asks for a new order with [`PaneRequest::Before`]. Docking chrome
+//! ([`crate::docking::chrome`]) draws the floating frames and title bars. [`Rail`] draws an icon
+//! strip at one edge that opens one pane at a time.
 
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::ops::RangeInclusive;
 
-use egui::{Context, Frame, Id, Key, LayerId, Margin, Modifiers, Order, Pos2, Rect, Response, Sense, Ui, UiBuilder, Vec2, pos2, vec2};
+use egui::{
+    Context, Frame, Id, Key, LayerId, Margin, Modifiers, Order, Pos2, Rect, Response, Role, Sense, Ui, UiBuilder, Vec2, WidgetInfo, pos2, vec2,
+};
 
 use crate::docking::PanelLimits;
 use crate::docking::chrome::{self, ChromeStyle, FloatingFrame, MoveStep, TitleBar};
@@ -20,8 +25,12 @@ use crate::layout::{ResizeHandle, ResizeHandleStyle, SplitAxis};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+mod rail;
+
+pub use rail::{RAIL_BUTTON, RAIL_WIDTH, Rail, RailItem, RailOutput, RailRequest};
+
 /// A title dragged this far out of a docked pane floats it; a pane dropped this close to the
-/// host's left or right edge docks there.
+/// host's left or right edge docks there, outermost.
 pub const DOCK_SNAP: f32 = 32.0;
 /// Height of a pane's title bar.
 pub const TITLE_BAR_HEIGHT: f32 = 24.0;
@@ -70,7 +79,7 @@ impl PaneState {
             PaneRequest::Place(_, place) => self.place = *place,
             PaneRequest::Resize(_, size) => self.size = Some(*size),
             PaneRequest::FloatRect(_, rect) => self.float_rect = Some(*rect),
-            PaneRequest::Close(_) | PaneRequest::Focus(_) => {}
+            PaneRequest::Close(_) | PaneRequest::Focus(_) | PaneRequest::Before(..) => {}
         }
     }
 }
@@ -78,11 +87,16 @@ impl PaneState {
 /// How docked panes share an edge.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SidePolicy {
-    /// Every pane on an edge is shown, side by side in `open` order, the first outermost.
+    /// Every pane on an edge is shown, side by side in `open` order, the first outermost. A drop
+    /// over the outer third of a docked side pane docks directly outside it, over its inner third
+    /// directly inside it, and at the host's left or right edge outermost; the host asks for that
+    /// position with [`PaneRequest::Before`].
     #[default]
     Columns,
     /// One pane per edge: the last of the edge's closable panes in `open`. Panes that are not
-    /// closable (context panes the app shows from its own state) are shown beside the slot.
+    /// closable (context panes the app shows from its own state) are shown beside the slot. A
+    /// closable pane dropped on an edge takes its slot: [`PaneRequest::Before`] moves it after the
+    /// slot's pane in `open`.
     OneSlot,
 }
 
@@ -95,12 +109,16 @@ pub enum PaneRequest<P> {
     FloatRect(P, [f32; 4]),
     /// The pane took focus from a click, keyboard focus or F6.
     Focus(P),
+    /// Move the first pane in `open` to directly before the second (`None`: after every pane),
+    /// which puts it directly outside the second on their edge. Sent after the `Place` of a drop
+    /// that picks a position on an edge, and only when `open` changes.
+    Before(P, Option<P>),
 }
 
 impl<P> PaneRequest<P> {
     pub fn pane(&self) -> &P {
         match self {
-            Self::Close(p) | Self::Place(p, _) | Self::Resize(p, _) | Self::FloatRect(p, _) | Self::Focus(p) => p,
+            Self::Close(p) | Self::Place(p, _) | Self::Resize(p, _) | Self::FloatRect(p, _) | Self::Focus(p) | Self::Before(p, _) => p,
         }
     }
 }
@@ -134,6 +152,13 @@ pub trait PaneContent<P> {
     }
     /// `false`: no × and no Close item (context panes such as PivotTable Fields).
     fn closable(&self, _pane: &P) -> bool {
+        true
+    }
+    /// `false`: a docked pane draws no title bar (no title, ▾ menu, × or title drag), for bodies
+    /// that draw their own header. The body fills the pane, the resize edge stays and F6 still
+    /// reaches the pane. Close then comes only from the app. A floating pane always draws its
+    /// title bar, which moves it.
+    fn title_bar(&self, _pane: &P) -> bool {
         true
     }
     /// App items, shown above the Move, Float and Close items of the ▾ menu.
@@ -205,10 +230,54 @@ struct DragOut {
     canceled: bool,
 }
 
+#[derive(Clone)]
 struct Shown<P> {
     pane: P,
     id: Id,
     state: PaneState,
+}
+
+/// Where a dragged pane docks when dropped: at `edge`, directly before the pane `before` in
+/// `open` (`None`: after every pane).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Target {
+    edge: Edge,
+    before: Option<Id>,
+}
+
+/// `panes` with `pane` docked at the target's edge and at its place in the order.
+fn arrange<P: Clone>(panes: &[Shown<P>], pane: Id, target: Target) -> Vec<Shown<P>> {
+    let mut after = panes.to_vec();
+    let Some(index) = after.iter().position(|s| s.id == pane) else { return after };
+    let mut moved = after.remove(index);
+    moved.state.place = Place::Docked(target.edge);
+    let at = match target.before {
+        Some(before) => after.iter().position(|s| s.id == before).unwrap_or(index),
+        None => after.len(),
+    };
+    after.insert(at.min(after.len()), moved);
+    after
+}
+
+/// The requests that dock `pane` at `target`: its `Place` when the edge changes, then `Before`
+/// when `open` changes. None when it lands where it is.
+fn dock_requests<P: Clone>(panes: &[Shown<P>], pane: Id, target: Target) -> Vec<PaneRequest<P>> {
+    let mut requests = Vec::new();
+    let Some(s) = panes.iter().find(|s| s.id == pane) else { return requests };
+    let after = arrange(panes, pane, target);
+    let docked = Place::Docked(target.edge);
+    let on_edge = |list: &[Shown<P>]| list.iter().filter(|s| s.state.place == docked).map(|s| s.id).collect::<Vec<_>>();
+    if s.state.place == docked && on_edge(panes) == on_edge(&after) {
+        return requests;
+    }
+    if s.state.place != docked {
+        requests.push(PaneRequest::Place(s.pane.clone(), docked));
+    }
+    if !panes.iter().map(|s| s.id).eq(after.iter().map(|s| s.id)) {
+        let before = target.before.and_then(|id| panes.iter().find(|s| s.id == id)).map(|s| s.pane.clone());
+        requests.push(PaneRequest::Before(s.pane.clone(), before));
+    }
+    requests
 }
 
 /// Where a pane was drawn, for focus tracking.
@@ -224,6 +293,7 @@ fn memory_id(id: Id) -> Id {
 
 /// Move focus to the next pane (the previous one with `reverse`) at the host's next frame. For
 /// apps that route F6 through their own commands; see [`PaneHost::f6`].
+/// Pass the same explicit [`Id`] used for the host; strings require [`Id::unique`].
 pub fn focus_next(ctx: &Context, id: impl Into<Id>, reverse: bool) {
     let key = memory_id(id.into());
     ctx.data_mut(|data| data.get_temp_mut_or_default::<Memory>(key).cycle = Some(reverse));
@@ -231,6 +301,8 @@ pub fn focus_next(ctx: &Context, id: impl Into<Id>, reverse: bool) {
 }
 
 impl PaneHost {
+    /// Creates a host with a stable global ID. Use [`Id::unique`] to turn a string or tuple
+    /// into an ID, and reuse that ID for [`focus_next`].
     pub fn new(id: impl Into<Id>) -> Self {
         Self {
             id: id.into(),
@@ -349,20 +421,9 @@ impl PaneHost {
                 states(pane).or_else(|| ctx.data(|data| data.get_temp::<PaneState>(id.with("state")))).unwrap_or_else(|| content.default_state(pane));
             shown.push(Shown { pane: pane.clone(), id, state });
         }
-        if self.policy == SidePolicy::OneSlot {
-            let mut taken = Vec::new();
-            for index in (0..shown.len()).rev() {
-                if let Place::Docked(edge) = shown[index].state.place
-                    && content.closable(&shown[index].pane)
-                {
-                    if taken.contains(&edge) {
-                        shown.remove(index);
-                    } else {
-                        taken.push(edge);
-                    }
-                }
-            }
-        }
+        // Before the one-slot filter: a drop can reveal a pane this frame hides.
+        let open_panes = shown.clone();
+        self.one_slot(&mut shown, content);
 
         let previous = memory.active.filter(|active| shown.iter().any(|s| s.id == *active));
         memory.active = previous;
@@ -391,12 +452,13 @@ impl PaneHost {
         let mut regions = Vec::new();
         for edge in [Edge::Start, Edge::End, Edge::Bottom] {
             for s in shown.iter().filter(|s| s.state.place == Place::Docked(edge)) {
-                let rect = self.docked(ui, s, edge, content, &style, focus_target == Some(s.id), bounds, &mut memory, &preview, &mut requests);
+                let rect =
+                    self.docked(ui, &open_panes, s, edge, content, &style, focus_target == Some(s.id), bounds, &mut memory, &preview, &mut requests);
                 regions.push(Region { pane: s.id, rect, floating: None });
             }
         }
         for s in shown.iter().filter(|s| s.state.place == Place::Floating) {
-            let (rect, layer) = self.floating(&ctx, s, content, &style, focus_target == Some(s.id), bounds, &mut requests);
+            let (rect, layer) = self.floating(&ctx, &open_panes, s, content, &style, focus_target == Some(s.id), bounds, &preview, &mut requests);
             regions.push(Region { pane: s.id, rect, floating: Some(layer) });
         }
 
@@ -461,10 +523,130 @@ impl PaneHost {
         (min, max.min(self.max_fraction * extent).max(min))
     }
 
+    /// With [`SidePolicy::OneSlot`], drop every closable docked pane but the last on its edge.
+    fn one_slot<P, C: PaneContent<P>>(&self, shown: &mut Vec<Shown<P>>, content: &C) {
+        if self.policy != SidePolicy::OneSlot {
+            return;
+        }
+        let mut taken = Vec::new();
+        for index in (0..shown.len()).rev() {
+            if let Place::Docked(edge) = shown[index].state.place
+                && content.closable(&shown[index].pane)
+            {
+                if taken.contains(&edge) {
+                    shown.remove(index);
+                } else {
+                    taken.push(edge);
+                }
+            }
+        }
+    }
+
+    /// The width (height at the bottom) of a pane docked at `edge`: its size, else its default,
+    /// within its limits.
+    fn docked_size<P, C: PaneContent<P>>(&self, content: &C, s: &Shown<P>, edge: Edge, bounds: Rect) -> f32 {
+        let extent = if self.side(edge) == Side::Bottom { bounds.height() } else { bounds.width() };
+        let (min, max) = self.limits(content, &s.pane, extent);
+        let default = content.default_state(&s.pane).size;
+        s.state.size.filter(|v| v.is_finite()).or(default.filter(|v| v.is_finite())).unwrap_or(min).clamp(min, max)
+    }
+
+    /// The rects of the side panes in `panes` as [`Self::show`] draws them: `Start` panes, then
+    /// `End` panes, each in order from the outside in and no wider than the space left.
+    fn side_rects<P, C: PaneContent<P>>(&self, panes: &[Shown<P>], content: &C, bounds: Rect) -> Vec<(Id, Edge, Rect)> {
+        let mut rects = Vec::new();
+        let mut free = bounds;
+        for edge in [Edge::Start, Edge::End] {
+            for s in panes.iter().filter(|s| s.state.place == Place::Docked(edge)) {
+                let size = self.docked_size(content, s, edge, bounds).min(free.width()).max(0.0);
+                let rect = if self.side(edge) == Side::Left {
+                    let rect = Rect::from_x_y_ranges(free.left()..=free.left() + size, free.y_range());
+                    free.min.x = rect.right();
+                    rect
+                } else {
+                    let rect = Rect::from_x_y_ranges(free.right() - size..=free.right(), free.y_range());
+                    free.max.x = rect.left();
+                    rect
+                };
+                rects.push((s.id, edge, rect));
+            }
+        }
+        rects
+    }
+
+    /// Where `pane`, dragged with the pointer at `pointer`, docks if dropped: at the host's left or
+    /// right edge, outermost there, or over the outer or inner third of another docked side pane,
+    /// directly outside or inside it. `panes` is the open list before the one-slot filter.
+    fn target<P: Clone, C: PaneContent<P>>(&self, pointer: Pos2, panes: &[Shown<P>], pane: Id, content: &C, bounds: Rect) -> Option<Target> {
+        if !pointer.is_finite() {
+            return None;
+        }
+        let others = || panes.iter().filter(|s| s.id != pane);
+        // The pane after `id` in `open`, skipping the dragged pane: directly after `id` is
+        // directly before that one.
+        let after = |id: Id| others().skip_while(|s| s.id != id).nth(1).map(|s| s.id);
+        // Directly before the pane that follows it, the dragged pane keeps its place in `open`.
+        let keep = panes.iter().skip_while(|s| s.id != pane).nth(1).map(|s| s.id);
+        let mut visible = panes.to_vec();
+        self.one_slot(&mut visible, content);
+        // One slot per edge leaves no position to pick: a closable pane takes the edge's slot by
+        // going after the slot's pane.
+        let slot = |edge: Edge, columns: Option<Id>| match self.policy {
+            SidePolicy::Columns => columns,
+            SidePolicy::OneSlot => {
+                let closable = panes.iter().any(|s| s.id == pane && content.closable(&s.pane));
+                match visible.iter().find(|s| closable && s.id != pane && s.state.place == Place::Docked(edge) && content.closable(&s.pane)) {
+                    Some(taken) => after(taken.id),
+                    None => keep,
+                }
+            }
+        };
+        if let Some(edge) = self.snap(pointer, bounds) {
+            let first = others().find(|s| s.state.place == Place::Docked(edge)).map(|s| s.id);
+            return Some(Target { edge, before: slot(edge, first.or(keep)) });
+        }
+        let (id, edge, rect) = self.side_rects(&visible, content, bounds).into_iter().find(|(id, _, rect)| *id != pane && rect.contains(pointer))?;
+        let third = rect.width() / 3.0;
+        let from_outside = if self.side(edge) == Side::Left { pointer.x - rect.left() } else { rect.right() - pointer.x };
+        if from_outside < third {
+            Some(Target { edge, before: slot(edge, Some(id)) })
+        } else if from_outside > rect.width() - third {
+            Some(Target { edge, before: slot(edge, after(id)) })
+        } else {
+            None
+        }
+    }
+
+    /// The rect `pane` takes on the next frame once it is docked at `target`. `None` when
+    /// [`SidePolicy::OneSlot`] would hide it there.
+    fn landing<P: Clone, C: PaneContent<P>>(&self, panes: &[Shown<P>], pane: Id, target: Target, content: &C, bounds: Rect) -> Option<Rect> {
+        let mut after = arrange(panes, pane, target);
+        self.one_slot(&mut after, content);
+        self.side_rects(&after, content, bounds).into_iter().find(|(id, _, _)| *id == pane).map(|(_, _, rect)| rect)
+    }
+
+    /// Paints where `pane` lands when it is dropped at `target`.
+    #[allow(clippy::too_many_arguments)]
+    fn preview_dock<P: Clone, C: PaneContent<P>>(
+        &self,
+        preview: &egui::Painter,
+        style: &ChromeStyle,
+        panes: &[Shown<P>],
+        pane: Id,
+        target: Target,
+        content: &C,
+        bounds: Rect,
+    ) {
+        if let Some(rect) = self.landing(panes, pane, target, content, bounds) {
+            chrome::drop_preview(preview, rect.shrink(1.0), style.accent, true);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn docked<P: Clone + Hash + Debug, C: PaneContent<P>>(
         &self,
         ui: &mut Ui,
+        shown: &[Shown<P>],
         s: &Shown<P>,
         edge: Edge,
         content: &mut C,
@@ -478,8 +660,10 @@ impl PaneHost {
         let side = self.side(edge);
         let extent = if side == Side::Bottom { bounds.height() } else { bounds.width() };
         let (min, max) = self.limits(content, &s.pane, extent);
-        let default = content.default_state(&s.pane).size;
-        let size = s.state.size.filter(|v| v.is_finite()).or(default.filter(|v| v.is_finite())).unwrap_or(min).clamp(min, max);
+        // A side pane takes no more than the width the panes outside it leave: egui would place
+        // a wider one partly beyond the host's edge.
+        let room = if side == Side::Bottom { f32::INFINITY } else { ui.available_rect_before_wrap().width().max(0.0) };
+        let size = self.docked_size(content, s, edge, bounds).min(room);
         let panel_id = s.id.with("panel");
         let panel = match side {
             Side::Left => egui::Panel::left(panel_id),
@@ -487,26 +671,45 @@ impl PaneHost {
             Side::Bottom => egui::Panel::bottom(panel_id),
         };
         let frame = self.frame.unwrap_or_else(|| Frame::NONE.fill(ui.visuals().panel_fill).stroke(ui.visuals().widgets.noninteractive.bg_stroke));
-        let shown = panel.exact_size(size).resizable(false).frame(frame).show(ui, |ui| {
+        let title_bar = content.title_bar(&s.pane);
+        let drawn = panel.exact_size(size).resizable(false).frame(frame).show(ui, |ui| {
             let top = ui.max_rect();
-            let title = Rect::from_min_size(top.min, vec2(top.width(), TITLE_BAR_HEIGHT));
-            ui.allocate_rect(title, Sense::hover());
-            let bar = self.chrome(ui, title, s, content, style, focus, bounds, requests);
+            let (bar, body_top) = if title_bar {
+                let title = Rect::from_min_size(top.min, vec2(top.width(), TITLE_BAR_HEIGHT));
+                ui.allocate_rect(title, Sense::hover());
+                (Some(self.chrome(ui, title, s, content, style, focus, bounds, requests)), title.bottom())
+            } else {
+                (None, top.top())
+            };
             // The pane reserves exactly its size and clips its body. egui cuts a panel wider
             // than its exact size at its outer edge, so a wide body would shift a right or
             // bottom pane's reserved rect inwards and the document would draw over the pane.
-            let body = Rect::from_min_max(pos2(top.left(), title.bottom()), top.max);
+            let body = Rect::from_min_max(pos2(top.left(), body_top), top.max);
+            // Without a title bar, F6 focuses the body itself; Tab goes on into its widgets,
+            // which register after it.
+            let stop = (!title_bar).then(|| {
+                let stop = ui.interact(body, s.id.with("body"), Sense::focusable_noninteractive());
+                let title = content.title(&s.pane);
+                stop.widget_info(|| WidgetInfo::labeled(Role::Pane, true, &title));
+                if focus {
+                    stop.request_focus();
+                }
+                stop
+            });
             let mut child = ui.new_child(UiBuilder::new().max_rect(body).layout(*ui.layout()));
             child.set_clip_rect(body.intersect(ui.clip_rect()));
             Frame::NONE.inner_margin(self.margin).show(&mut child, |ui| {
                 ui.set_min_width(ui.available_width());
                 content.body(ui, &s.pane);
             });
+            if stop.as_ref().is_some_and(Response::has_focus) {
+                ui.painter().rect_stroke(body.shrink(1.0), 0.0, egui::Stroke::new(1.0, style.accent), egui::StrokeKind::Inside);
+            }
             ui.allocate_rect(body, Sense::hover());
             bar
         });
-        let rect = shown.response.rect;
-        let bar = shown.inner;
+        let rect = drawn.response.rect;
+        let bar = drawn.inner;
 
         let (axis, strip) = match side {
             Side::Left => (SplitAxis::Horizontal, Rect::from_x_y_ranges(rect.right() - 2.0..=rect.right() + 2.0, rect.y_range())),
@@ -514,7 +717,13 @@ impl PaneHost {
             Side::Bottom => (SplitAxis::Vertical, Rect::from_x_y_ranges(rect.x_range(), rect.top() - 2.0..=rect.top() + 2.0)),
         };
         let handle_style = ResizeHandleStyle { hovered: style.accent.gamma_multiply(0.5), dragged: style.accent, focused: style.accent };
-        let resize = ResizeHandle::new(s.id.with("resize"), axis, strip, &self.labels.resize, handle_style).show(ui);
+        // The edge's hit strip reaches over the document, whose widgets register after the host
+        // and would take presses there on the host's layer. A sublayer sits directly above it:
+        // over the document, under floating windows.
+        let edge_layer = LayerId::new(ui.layer_id().order, s.id.with("resize-layer"));
+        ui.ctx().set_sublayer(ui.layer_id(), edge_layer);
+        let mut edge_ui = ui.new_child(UiBuilder::new().layer_id(edge_layer));
+        let resize = ResizeHandle::new(s.id.with("resize"), axis, strip, &self.labels.resize, handle_style).show(&mut edge_ui);
         let next = if resize.response.dragged() {
             resize.response.interact_pointer_pos().map(|p| match side {
                 Side::Left => p.x - rect.left(),
@@ -533,29 +742,26 @@ impl PaneHost {
             requests.push(PaneRequest::Resize(s.pane.clone(), next));
         }
 
-        if content.movable(&s.pane) {
-            // Docked at the host's left or right edge, the pane gets the width the side limits
-            // give its size: a bottom pane's height, not its width.
-            let (side_min, side_max) = self.limits(content, &s.pane, bounds.width());
-            let side_width =
-                s.state.size.filter(|v| v.is_finite()).or(default.filter(|v| v.is_finite())).unwrap_or(side_min).clamp(side_min, side_max);
-            self.drag_out(ui.ctx(), &bar, s, edge, rect, side_width, bounds, memory, preview, style, requests);
+        if content.movable(&s.pane)
+            && let Some(bar) = &bar
+        {
+            self.drag_out(ui.ctx(), bar, shown, s, edge, rect, content, bounds, memory, preview, style, requests);
         }
         rect
     }
 
-    /// A docked pane's title dragged beyond [`DOCK_SNAP`] of the pane: dropped near the host's
-    /// left or right edge it docks there `side_width` wide, elsewhere it floats under the
-    /// pointer.
+    /// A docked pane's title dragged beyond [`DOCK_SNAP`] of the pane: dropped on a dock target
+    /// ([`Self::target`]) it docks there, elsewhere it floats under the pointer.
     #[allow(clippy::too_many_arguments)]
-    fn drag_out<P: Clone>(
+    fn drag_out<P: Clone, C: PaneContent<P>>(
         &self,
         ctx: &Context,
         bar: &Response,
+        shown: &[Shown<P>],
         s: &Shown<P>,
         edge: Edge,
         rect: Rect,
-        side_width: f32,
+        content: &C,
         bounds: Rect,
         memory: &mut Memory,
         preview: &egui::Painter,
@@ -574,15 +780,14 @@ impl PaneHost {
         let outside = if edge == Edge::Bottom { !near.y_range().contains(pointer.y) } else { !near.x_range().contains(pointer.x) };
         let size = s.state.float_rect.map_or(FLOAT_DEFAULT, |r| vec2(r[2], r[3]));
         let float = float_rect(Some(rect_array(Rect::from_min_size(pointer - FLOAT_GRAB, size))), bounds, vec2(0.0, FLOAT_MIN_HEIGHT));
-        let target = self.snap(pointer, bounds);
+        let target = self.target(pointer, shown, s.id, content, bounds);
         if bar.drag_stopped() {
             memory.drag_out = None;
             if drag.canceled || !outside {
                 return;
             }
             match target {
-                Some(target) if target != edge => requests.push(PaneRequest::Place(s.pane.clone(), Place::Docked(target))),
-                Some(_) => {}
+                Some(target) => requests.extend(dock_requests(shown, s.id, target)),
                 None => {
                     requests.push(PaneRequest::Place(s.pane.clone(), Place::Floating));
                     requests.push(PaneRequest::FloatRect(s.pane.clone(), rect_array(float)));
@@ -598,23 +803,23 @@ impl PaneHost {
         if drag.canceled || !outside {
             return;
         }
-        let shape = match target.map(|t| self.side(t)) {
-            Some(Side::Left) => Rect::from_x_y_ranges(bounds.left()..=bounds.left() + side_width, bounds.y_range()),
-            Some(_) => Rect::from_x_y_ranges(bounds.right() - side_width..=bounds.right(), bounds.y_range()),
-            None => float,
-        };
-        chrome::drop_preview(preview, shape.shrink(1.0), style.accent, true);
+        match target {
+            Some(target) => self.preview_dock(preview, style, shown, s.id, target, content, bounds),
+            None => chrome::drop_preview(preview, float.shrink(1.0), style.accent, true),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
     fn floating<P: Clone + Hash + Debug, C: PaneContent<P>>(
         &self,
         ctx: &Context,
+        panes: &[Shown<P>],
         s: &Shown<P>,
         content: &mut C,
         style: &ChromeStyle,
         focus: bool,
         bounds: Rect,
+        preview: &egui::Painter,
         requests: &mut Vec<PaneRequest<P>>,
     ) -> (Rect, LayerId) {
         let (min_width, _) = self.limits(content, &s.pane, bounds.width());
@@ -641,13 +846,19 @@ impl PaneHost {
             requests.push(PaneRequest::FloatRect(s.pane.clone(), rect_array(resized)));
         }
         if content.movable(&s.pane) {
-            match chrome::live_move(ctx, &shown.inner, shown.rect, bounds) {
+            let step = chrome::live_move(ctx, &shown.inner, shown.rect, bounds);
+            if let Some(MoveStep::Moving(_)) = step
+                && let Some(target) = ctx.pointer_latest_pos().and_then(|pointer| self.target(pointer, panes, s.id, content, bounds))
+            {
+                self.preview_dock(preview, style, panes, s.id, target, content, bounds);
+            }
+            match step {
                 Some(MoveStep::Moving(next) | MoveStep::Canceled(next)) if next != shown.rect => {
                     requests.push(PaneRequest::FloatRect(s.pane.clone(), rect_array(next)));
                 }
                 Some(MoveStep::Dropped { rect, pointer }) => {
-                    if let Some(edge) = self.snap(pointer, bounds) {
-                        requests.push(PaneRequest::Place(s.pane.clone(), Place::Docked(edge)));
+                    if let Some(target) = self.target(pointer, panes, s.id, content, bounds) {
+                        requests.extend(dock_requests(panes, s.id, target));
                     } else if rect != shown.rect {
                         requests.push(PaneRequest::FloatRect(s.pane.clone(), rect_array(rect)));
                     }
@@ -737,5 +948,7 @@ pub fn float_rect(saved: Option<[f32; 4]>, bounds: Rect, min: Vec2) -> Rect {
     Rect::from_min_size(pos, size)
 }
 
+#[cfg(test)]
+mod rail_tests;
 #[cfg(test)]
 mod tests;

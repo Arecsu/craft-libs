@@ -6,13 +6,25 @@ use super::{DROP_MARGIN, Drawn, Renderer, clamp_float, dock::group_action};
 use crate::docking::chrome::drop_preview;
 use crate::docking::{
     Action, Drag, DropProposal, DropRequest, DropTarget, GroupDrag, GroupGesture, Layout, Node, Placement, Target, Zone, cancel_drag,
-    dock_model::Place, resolve_drop, surface::TAB_PADDING,
+    dock_model::{Place, sized_split_depth},
+    surface::TAB_PADDING,
+    targets::{DockDrop, SIDE_EDGE_ZONE_DEPTH, resolve_drop_on},
 };
-use crate::layout::SplitAxis;
+use crate::layout::{SplitAxis, SplitSize};
 
 /// Ctrl (Windows, Linux) or Cmd (macOS) held: the drop floats and no target is offered.
 fn float_only(ctx: &Context) -> bool {
     ctx.input(|i| i.modifiers.command || i.modifiers.ctrl || i.modifiers.mac_cmd)
+}
+
+/// Share of the accent that fills a tab drop's outline: light, so it does not read as a line.
+const TAB_FILL: f32 = 0.08;
+
+/// The preview of a drop that joins a group as a tab, or of the rect a drop beside something
+/// gives the moved panels: a 2 pt accent outline inside `rect`, with a light fill.
+fn tab_outline(painter: &egui::Painter, rect: Rect, accent: egui::Color32) {
+    painter.rect_filled(rect, 0.0, accent.gamma_multiply(TAB_FILL));
+    painter.rect_stroke(rect, 0.0, egui::Stroke::new(2.0, accent), egui::StrokeKind::Inside);
 }
 
 /// Height of a panel floated out of a dock column when the host gives no floating size.
@@ -20,6 +32,11 @@ const DOCKED_FLOAT_HEIGHT: f32 = 320.0;
 
 /// Least height of a floating window or flyout fitted to a short panel's content.
 pub(super) const MIN_FITTED_HEIGHT: f32 = 120.0;
+
+/// Key of whether the area's group drag highlighted a drop target on the last frame, under the
+/// area's id. An in-window floating window that its bar drag moves fades from it on the next
+/// frame: the window draws before the preview.
+pub(super) const GROUP_HIGHLIGHTED: &str = "group-drag-highlighted";
 
 /// What finishing a drag reads of the pointer, in the coordinates of the window finishing it.
 #[derive(Clone, Copy, Debug)]
@@ -59,6 +76,7 @@ impl DragInput {
 impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
     pub(in crate::docking) fn finish_group_drag(&mut self, ui: &Ui) {
         let ctx = ui.ctx();
+        ctx.data_mut(|d| d.remove::<bool>(self.id.with(GROUP_HIGHLIGHTED)));
         let key = self.id.with("group-drag");
         let Some(drag) = ctx.data(|d| d.get_temp::<GroupDrag<P>>(key)) else { return };
         if !drag.members.iter().all(|p| self.layout.contains(p) && self.permissions(p).movable) {
@@ -110,29 +128,42 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             }
         } else if let Some(pointer) = pointer.filter(|p| !self.blockers.iter().any(|r| r.contains(*p))) {
             self.output.group_drag = Some(drag.panel.clone());
-            self.paint_group_drag(ui, &drag, pointer, float_only);
+            if self.paint_group_drag(ui, &drag, pointer, float_only) {
+                ctx.data_mut(|d| d.insert_temp(self.id.with(GROUP_HIGHLIGHTED), true));
+            }
         }
     }
 
     /// The valid target under the pointer for a whole group. A target holding the group
-    /// itself is a no-op proposal; a target the model would reject is no target. A window
-    /// moving live looks through itself and does not split frames or, moved by its bar, join
-    /// a body's center.
+    /// itself is a no-op proposal, and so is a drop that would change only sizes; a target
+    /// the model would reject is no target. A drag that takes a whole floating window along
+    /// looks through it ([`Self::looks_through`]). A window moving live does not split frames
+    /// or, moved by its bar, join a body's center.
     pub(super) fn group_proposal(&self, drag: &GroupDrag<P>, pointer: Pos2) -> Option<DropProposal<P>> {
-        let window = drag.gesture == GroupGesture::Window;
-        if let Some(proposal) = self.extra_proposal(&drag.members, pointer, window) {
-            return self.valid_group(drag, proposal);
+        if let Some(proposal) = self.extra_proposal(&drag.members, pointer, self.looks_through(drag)) {
+            return self.valid_group(drag, self.settled(proposal, |to| group_action(drag, to)));
         }
         let target = self.group_target(drag, pointer)?;
         self.group_proposal_at(drag, pointer, target)
     }
 
-    /// The group under the pointer that a group drag addresses. A window moving live looks
-    /// through itself.
+    /// Whether a group drag looks through the floating window it comes from: the window's
+    /// title bar moves it, or the drag holds the window's only group and so takes the window
+    /// along. The window then covers nothing behind it.
+    pub(super) fn looks_through(&self, drag: &GroupDrag<P>) -> bool {
+        match drag.gesture {
+            GroupGesture::Window => true,
+            GroupGesture::Group => self.whole_window(&drag.panel),
+            GroupGesture::Column => false,
+        }
+    }
+
+    /// The group under the pointer that a group drag addresses, past the drag's own groups
+    /// when it looks through its window.
     fn group_target(&self, drag: &GroupDrag<P>, pointer: Pos2) -> Option<&DropTarget<P>> {
-        let window = drag.gesture == GroupGesture::Window;
+        let through = self.looks_through(drag);
         let own = |t: &DropTarget<P>| t.tabs.iter().any(|(p, _)| drag.members.contains(p));
-        self.targets.iter().rev().find(|t| crate::docking::targets::usable(t.rect) && t.rect.contains(pointer) && !(window && own(t)))
+        self.targets.iter().rev().find(|t| crate::docking::targets::usable(t.rect) && t.rect.contains(pointer) && !(through && own(t)))
     }
 
     /// [`Self::group_proposal`] on `target` alone.
@@ -159,7 +190,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         let (edges, joins) = (false, false);
         let split = match proposal.placement {
             Placement::Split(Zone::Center) => !joins,
-            Placement::Split(_) => !edges,
+            Placement::Split(_) | Placement::SplitSized { .. } => !edges,
             _ => false,
         };
         if window && !into_window && split {
@@ -174,18 +205,130 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         (proposal.noop || self.layout.clone().apply_with_permissions(group_action(drag, to), |p| self.permissions(p)).is_ok()).then_some(proposal)
     }
 
-    /// [`resolve_drop`], where a split that would leave a group without room becomes a join
-    /// of the target group.
+    /// [`crate::docking::resolve_drop_by`] with [`crate::docking::DockStyle::zone_rule`] and the
+    /// canvas sides of [`crate::docking::DockStyle::drop_edges`] (none in the docking profile),
+    /// where a split that would leave a group without room becomes a join of the target group,
+    /// or no target when the group takes no tabs. A drop that would change only sizes is a no-op ([`Self::settled`]).
     fn resolve_roomy(&self, panel: &P, pointer: Pos2, targets: &[DropTarget<P>], action: impl Fn(Target<P>) -> Action<P>) -> Option<DropProposal<P>> {
-        let proposal = resolve_drop(panel, pointer, targets, self.style.zone_depth)?;
+        let proposal = resolve_drop_on(panel, pointer, targets, self.style.zone_rule(), self.style.canvas_sides())?;
         if !matches!(proposal.placement, Placement::Split(zone) if zone != Zone::Center) {
-            return Some(proposal);
+            return Some(self.settled(proposal, action));
         }
         if self.leaves_room(action(Target::At { anchor: proposal.anchor.clone(), placement: proposal.placement.clone() })) {
-            return Some(proposal);
+            return Some(self.settled(proposal, action));
+        }
+        if let Some(placement) = self.sized_split(panel, &proposal, &action)
+            && self.leaves_room(action(Target::At { anchor: proposal.anchor.clone(), placement: placement.clone() }))
+        {
+            return Some(self.settled(DropProposal { placement, ..proposal }, action));
         }
         let target = targets.iter().rev().find(|t| crate::docking::targets::usable(t.rect) && t.rect.contains(pointer))?;
-        resolve_drop(panel, pointer, std::slice::from_ref(&DropTarget { allow_splits: false, ..target.clone() }), self.style.zone_depth)
+        let proposal = resolve_drop_on(
+            panel,
+            pointer,
+            std::slice::from_ref(&DropTarget { allow_splits: false, ..target.clone() }),
+            self.style.zone_rule(),
+            self.style.canvas_sides(),
+        )?;
+        Some(self.settled(proposal, action))
+    }
+
+    /// The side split of `proposal`'s frame when halving it leaves no room
+    /// ([`Placement::SplitSized`]): the frame keeps its size, and the frames beyond the divider
+    /// on that side, or on the opposite side for a frame at the edge of its area, give the new
+    /// frame its minimum (with [`DROP_MARGIN`]). A floating panel
+    /// keeps its size along the split instead, and one in a dock column its column's width or
+    /// its group's height, when that fits. `None` without such a divider, or when those frames
+    /// cannot give the new frame its minimum.
+    fn sized_split(&self, panel: &P, proposal: &DropProposal<P>, action: &impl Fn(Target<P>) -> Action<P>) -> Option<Placement<P>> {
+        let Placement::Split(zone) = proposal.placement else { return None };
+        let axis = if matches!(zone, Zone::Top | Zone::Bottom) { SplitAxis::Vertical } else { SplitAxis::Horizontal };
+        let along = |v: Vec2| if axis == SplitAxis::Horizontal { v.x } else { v.y };
+        let start = matches!(zone, Zone::Left | Zone::Top);
+        let anchor = &proposal.anchor;
+        let now = self.drawn_groups(self.layout);
+        let frame = along(now.iter().find(|(node, _)| holds(node, anchor))?.1.size());
+        let mut candidate = self.layout.clone();
+        let halves = action(Target::At { anchor: anchor.clone(), placement: proposal.placement.clone() });
+        candidate.apply_with_permissions(halves, |p| self.permissions(p)).ok()?;
+        let (root, area, path) = match candidate.place(anchor)? {
+            Place::Node(path) => (candidate.root.as_ref()?, self.workspace, path),
+            Place::Floating { window, path } => {
+                let window = candidate.floating.get(window)?;
+                (&window.root, self.window_body(window), path)
+            }
+            Place::Dock { .. } => return None,
+        };
+        // The splits from the root down to the new one, as drawn with halves.
+        let sizer = self.sizer();
+        let (_, split_path) = path.split_last()?;
+        let mut chain = vec![(root, area)];
+        for &second in split_path {
+            let &(node, rect) = chain.last()?;
+            let [a, b] = sizer.children(node, rect)?;
+            chain.push(if second { b } else { a });
+        }
+        let &(Node::Split { first, second, .. }, halved) = chain.last()? else { return None };
+        let new = if start { first } else { second };
+        let depth =
+            sized_split_depth(split_path, zone, |d| chain.get(d).is_some_and(|(n, _)| matches!(n, Node::Split { axis: own, .. } if *own == axis)))?;
+        // The frame is in the outer split's second child when the divider is on its start side.
+        let in_second = *split_path.get(depth)?;
+        let &(outer, outer_rect) = chain.get(depth)?;
+        let Node::Split { size: outer_size, first: a, second: b, .. } = outer else { return None };
+        if matches!(**a, Node::Dock { .. }) || matches!(**b, Node::Dock { .. }) {
+            return None;
+        }
+        let [a, b] = sizer.children(outer, outer_rect)?;
+        let far = if in_second { a } else { b };
+        // The far side's edge at the divider is its end edge when the frame is in the second
+        // child.
+        let room = sizer.travel(far.0, far.1, axis, in_second).0 - DROP_MARGIN;
+        let least = along(super::node_limits(new, self.style, &*self.content).min) + DROP_MARGIN;
+        let gap = self.style.gap;
+        // A split frame's width is its share of the room, not one of its own.
+        let saved = match self.place(panel) {
+            Some(Place::Floating { .. }) => now.iter().find(|(node, _)| holds(node, panel)).map(|(_, rect)| along(rect.size())),
+            Some(place @ Place::Dock { .. }) if axis == SplitAxis::Horizontal => self.layout.column(place).map(|column| column.width),
+            Some(place @ Place::Dock { .. }) => self.layout.group(place).and_then(|group| group.height),
+            _ => None,
+        };
+        let most = along(halved.size()) + room - frame - gap;
+        if least > most {
+            return None;
+        }
+        let size = saved.filter(|width| (least..=most).contains(width)).unwrap_or(least);
+        // The anchor's side of the outer split grows by what the halves did not take already.
+        let grow = frame + gap + size - along(halved.size());
+        let first = along(a.1.size()) + if in_second { -grow } else { grow };
+        let outer = super::sizes::resized(*outer_size, first, along(a.1.size()) + along(b.1.size()))?;
+        let size = super::sizes::resized(SplitSize::Ratio(0.5), if start { size } else { frame }, frame + size)?;
+        Some(Placement::SplitSized { zone, size, outer })
+    }
+
+    /// Every group of `layout`'s trees as drawn, with its rect.
+    fn drawn_groups<'l>(&self, layout: &'l Layout<P>) -> Vec<(&'l Node<P>, Rect)> {
+        let sizer = self.sizer();
+        let mut out = Vec::new();
+        for (root, area) in self.trees(layout) {
+            let mut drawn = Vec::new();
+            sizer.groups(root, area, &mut drawn);
+            out.extend(drawn.into_iter().map(|d| (d.node, d.rect)));
+        }
+        out
+    }
+
+    /// `proposal`, marked a no-op when `action` at it would leave every panel where it is,
+    /// changing only sizes ([`Layout::same_arrangement`]): a lone group dropped beside the
+    /// group it already borders, or a tab on the edge its frame already holds. Such a drop
+    /// shows no target and changes nothing.
+    fn settled(&self, mut proposal: DropProposal<P>, action: impl Fn(Target<P>) -> Action<P>) -> DropProposal<P> {
+        if !proposal.noop {
+            let mut candidate = self.layout.clone();
+            let to = Target::At { anchor: proposal.anchor.clone(), placement: proposal.placement.clone() };
+            proposal.noop = candidate.apply_with_permissions(action(to), |p| self.permissions(p)).is_ok() && candidate.same_arrangement(self.layout);
+        }
+        proposal
     }
 
     /// Whether `action`, a drop that splits a group or the outer edge, leaves room: every group
@@ -225,8 +368,9 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
     }
 
     /// Release of a group drag: join or split at the target, or float at the ghost with the
-    /// group's size. Over its own docked position nothing changes; a floating group released
-    /// over itself moves there.
+    /// group's size. Over its own docked position, or where the drop would change only sizes,
+    /// nothing changes; a floating group released over itself or a window's title bar moves
+    /// there.
     fn drop_group(&mut self, drag: &GroupDrag<P>, pointer: Pos2, float_only: bool) {
         if pointer.distance(drag.origin) < 2.0 {
             return;
@@ -242,7 +386,8 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             self.output.actions.push(group_action(drag, to));
             return;
         }
-        if proposal.is_some() && !floating {
+        // A no-op anchored on another group would change only sizes.
+        if proposal.is_some_and(|p| !floating || !drag.members.contains(&p.anchor)) {
             return;
         }
         if !float_only && !self.style.float_on_empty_drop {
@@ -259,7 +404,8 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
 
     /// The ghost at the pointer (a window moving live is its own ghost) under one destination
     /// preview. The ghost has a translucent fill, a 2 pt outline and the members' labels.
-    pub(super) fn paint_group_drag(&mut self, ui: &Ui, drag: &GroupDrag<P>, pointer: Pos2, float_only: bool) {
+    /// Returns whether it highlighted a drop target.
+    pub(super) fn paint_group_drag(&mut self, ui: &Ui, drag: &GroupDrag<P>, pointer: Pos2, float_only: bool) -> bool {
         let ctx = ui.ctx();
         let painter = self.preview_painter(ctx);
         if drag.gesture != GroupGesture::Window {
@@ -281,31 +427,33 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             }
         }
         if float_only || (drag.gesture == GroupGesture::Window && !self.title_bar_docks()) {
-            return;
+            return false;
         }
-        if let Some((action, line)) = self.dock_group_proposal(drag, pointer) {
-            if action.is_some() {
-                self.paint_dock_line(ctx, line);
+        if let Some((action, drop)) = self.dock_group_proposal(drag, pointer) {
+            let highlighted = action.is_some();
+            if let Some(action) = action {
+                self.paint_dock_preview(ctx, &painter, action, &drag.members, &drop);
                 if drag.gesture != GroupGesture::Window {
                     self.paint_float_hint(ctx, pointer);
                 }
             }
-            return;
+            return highlighted;
         }
         let proposal = self.group_proposal(drag, pointer).filter(|p| !p.noop);
         let zones = self.paint_group_zones(&painter, drag, pointer, proposal.as_ref());
         if let Some(proposal) = proposal {
-            let split = matches!(proposal.placement, Placement::Split(zone) | Placement::Edge(zone) if zone != Zone::Center);
-            if crate::docking::targets::usable(proposal.preview) && !zones {
-                drop_preview(&painter, proposal.preview.shrink(1.0), self.style.accent, split);
-            }
-            if let Some(marker) = proposal.insertion {
-                painter.rect_filled(marker, 0.0, self.style.accent);
+            if zones {
+                self.paint_marker(&painter, &proposal);
+            } else {
+                let split = matches!(proposal.placement, Placement::Split(zone) | Placement::SplitSized { zone, .. } | Placement::Edge(zone) if zone != Zone::Center);
+                self.paint_preview(ctx, &painter, &proposal, split, &drag.members, |to| group_action(drag, to));
             }
             if drag.gesture != GroupGesture::Window {
                 self.paint_float_hint(ctx, pointer);
             }
+            return true;
         }
+        false
     }
 
     pub(in crate::docking) fn finish_drag(&mut self, ctx: &Context) {
@@ -349,15 +497,16 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             return;
         }
         let dock = if float_only || outside { None } else { self.dock_tab_proposal(&drag.panel, pointer) };
-        if let Some((action, line)) = dock {
+        if let Some((action, drop)) = dock {
             if released {
                 cancel_drag::<P>(ctx, self.id);
                 if let Some(action) = action.filter(|_| pointer.distance(drag.origin) >= 2.0) {
                     self.output.actions.push(action);
                     self.output.focused = Some(drag.panel);
                 }
-            } else if action.is_some() {
-                self.paint_dock_line(ctx, line);
+            } else if let Some(action) = action {
+                let painter = self.preview_painter(ctx);
+                self.paint_dock_preview(ctx, &painter, action, std::slice::from_ref(&drag.panel), &drop);
                 self.paint_float_hint(ctx, pointer);
             }
             return;
@@ -397,12 +546,11 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
 
     /// The group target a single tab drag would take at `pointer`.
     pub(super) fn tab_proposal(&self, panel: &P, pointer: Pos2) -> Option<DropProposal<P>> {
-        self.extra_proposal(std::slice::from_ref(panel), pointer, false).or_else(|| {
-            self.resolve_roomy(panel, pointer, &self.targets, |to| match to {
-                Target::At { anchor, placement } => Action::Move { panel: panel.clone(), anchor, placement },
-                to => Action::MovePanel { panel: panel.clone(), to },
-            })
-        })
+        let action = |to| tab_action(panel, to);
+        match self.extra_proposal(std::slice::from_ref(panel), pointer, false) {
+            Some(proposal) => Some(self.settled(proposal, action)),
+            None => self.resolve_roomy(panel, pointer, &self.targets, action),
+        }
     }
 
     /// The preview of a tab drag's group target (with
@@ -421,14 +569,122 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         // Reordering inside the source strip shows only the insertion line.
         let same_group = proposal.insertion.is_some()
             && self.targets.iter().any(|target| target.rect == proposal.preview && target.tabs.iter().any(|(panel, _)| panel == &drag.panel));
-        if !same_group && !proposal.noop && crate::docking::targets::usable(proposal.preview) && !zones {
-            drop_preview(painter, proposal.preview.shrink(1.0), self.style.accent, true);
-        }
-        if let Some(marker) = proposal.insertion {
-            painter.rect_filled(marker, 0.0, self.style.accent);
+        if !same_group && !proposal.noop && !zones {
+            self.paint_preview(ctx, painter, proposal, true, std::slice::from_ref(&drag.panel), |to| tab_action(&drag.panel, to));
+        } else {
+            self.paint_marker(painter, proposal);
         }
         if !proposal.noop {
             self.paint_float_hint(ctx, pointer);
+        }
+    }
+
+    /// The preview of a group target, for tab and group drags of `members`, which `action` moves
+    /// there: for a drop beside the group, the rect the members then take
+    /// ([`Self::result_rect`]); on the layout's outer edge band, the line along that edge; else
+    /// the tab outline of the whole group, and the insertion marker on a strip. With
+    /// [`crate::docking::DockStyle::side_edge_zones`], the region the drop takes, filled for a
+    /// tab drag (`filled`) or a split.
+    fn paint_preview(
+        &self,
+        ctx: &Context,
+        painter: &egui::Painter,
+        proposal: &DropProposal<P>,
+        filled: bool,
+        members: &[P],
+        action: impl Fn(Target<P>) -> Action<P>,
+    ) {
+        if crate::docking::targets::usable(proposal.preview) {
+            let beside = matches!(proposal.placement, Placement::Split(zone) | Placement::SplitSized { zone, .. } if zone != Zone::Center);
+            if self.style.side_edge_zones {
+                drop_preview(painter, proposal.preview.shrink(1.0), self.style.accent, filled);
+            } else if matches!(proposal.placement, Placement::Edge(_)) {
+                self.paint_drop_line(ctx, proposal.preview, true);
+            } else if beside {
+                let to = Target::At { anchor: proposal.anchor.clone(), placement: proposal.placement.clone() };
+                match self.result_rect(action(to), members) {
+                    Some(rect) => tab_outline(painter, rect.shrink(1.0), self.style.accent),
+                    None => self.paint_drop_line(ctx, proposal.preview, false),
+                }
+            } else {
+                tab_outline(painter, proposal.preview.shrink(1.0), self.style.accent);
+            }
+        }
+        self.paint_marker(painter, proposal);
+    }
+
+    /// The preview of a dock drop that `action` makes of `members`: the rect they then take
+    /// ([`Self::result_rect`]). A drop on the window edge ([`DockDrop::outer`]) or into an
+    /// iconic column, and any dock drop with [`crate::docking::DockStyle::side_edge_zones`],
+    /// shows the drop's line.
+    fn paint_dock_preview(&self, ctx: &Context, painter: &egui::Painter, action: Action<P>, members: &[P], drop: &DockDrop<P>) {
+        let rect = (!self.style.side_edge_zones && !drop.outer).then_some(action).and_then(|action| self.result_rect(action, members));
+        match rect {
+            Some(rect) => tab_outline(painter, rect.shrink(1.0), self.style.accent),
+            None => self.paint_drop_line(ctx, drop.line, drop.outer),
+        }
+    }
+
+    /// Where `members` are drawn once `action` is applied, laid out by the code that draws the
+    /// layout: the union of the rects of the groups that hold them, or the rect of the dock
+    /// column they make up alone. A floating window's tree is laid out in its body as drawn
+    /// this frame. In a dock column that scrolls, a group's rect sits at the column's scroll
+    /// offset this frame and is clipped to the column's body. `None` when the model rejects `action`, or when the members join an iconic column,
+    /// whose icons show no rect.
+    pub(super) fn result_rect(&self, action: Action<P>, members: &[P]) -> Option<Rect> {
+        let mut candidate = self.layout.clone();
+        candidate.apply_with_permissions(action, |p| self.permissions(p)).ok()?;
+        let moved = |panels: &[P]| panels.iter().any(|p| members.contains(p));
+        let sizer = self.sizer();
+        let mut rects = Vec::new();
+        for (root, area) in self.drawn_trees(&candidate, members) {
+            let mut drawn = Vec::new();
+            sizer.groups(root, area, &mut drawn);
+            for Drawn { node, rect, .. } in drawn {
+                let Node::Dock { side, columns } = node else {
+                    if members.iter().any(|p| holds(node, p)) {
+                        rects.push(rect);
+                    }
+                    continue;
+                };
+                for (index, _, rect) in self.dock_columns(*side, columns, rect).rects {
+                    let Some(column) = columns.get(index).filter(|c| c.groups.iter().any(|g| moved(&g.panels))) else { continue };
+                    if column.groups.iter().flat_map(|g| &g.panels).all(|p| members.contains(p)) {
+                        rects.push(rect);
+                        continue;
+                    }
+                    if column.iconic {
+                        return None;
+                    }
+                    let (_, body, heights) = self.column_layout(column, rect);
+                    // The column keeps the scroll state of its first panel, as drawn.
+                    let overflow = (heights.iter().sum::<f32>() - body.height()).max(0.0);
+                    let scroll = column.groups.first().and_then(|g| g.panels.first()).and_then(|p| self.column_scroll.get(p));
+                    let area = body.translate(vec2(0.0, -scroll.copied().unwrap_or(0.0).min(overflow)));
+                    let groups = column.groups.iter().zip(super::dock::stacked(area, &heights));
+                    rects.extend(groups.filter(|(g, _)| moved(&g.panels)).map(|(_, rect)| rect.intersect(body)));
+                }
+            }
+        }
+        rects.into_iter().filter(|r| crate::docking::targets::usable(*r)).reduce(Rect::union)
+    }
+
+    /// [`Self::trees`] of `layout`, where a floating window that holds a panel other than
+    /// `members` is laid out in the body that window is drawn in this frame.
+    fn drawn_trees<'l>(&self, layout: &'l Layout<P>, members: &[P]) -> Vec<(&'l Node<P>, Rect)> {
+        let body = |window: &crate::docking::Floating<P>| {
+            let stays = |p: &&P| !members.contains(*p);
+            let hit = self.frame.windows.iter().find(|hit| window.panels().filter(stays).any(|p| hit.members.contains(p)));
+            hit.map_or_else(|| self.window_body(window), |hit| hit.body)
+        };
+        let windows = layout.floating.iter().filter(|w| !w.minimized).map(|w| (&w.root, body(w)));
+        layout.root.iter().map(|root| (root, self.workspace)).chain(windows).collect()
+    }
+
+    /// The insertion marker of a drop on a tab strip.
+    fn paint_marker(&self, painter: &egui::Painter, proposal: &DropProposal<P>) {
+        if let Some(marker) = proposal.insertion {
+            painter.rect_filled(marker, 0.0, self.style.accent);
         }
     }
 
@@ -443,10 +699,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         };
         let own = target.tabs.iter().any(|(p, _)| p == panel);
         let at = |at: Pos2| {
-            let move_to = |to| match to {
-                Target::At { anchor, placement } => Action::Move { panel: panel.clone(), anchor, placement },
-                to => Action::MovePanel { panel: panel.clone(), to },
-            };
+            let move_to = |to| tab_action(panel, to);
             let proposal = self.resolve_roomy(panel, at, std::slice::from_ref(target), move_to)?;
             let to = Target::At { anchor: proposal.anchor.clone(), placement: proposal.placement.clone() };
             let joins = matches!(proposal.placement, Placement::Tab { .. } | Placement::Split(Zone::Center));
@@ -457,8 +710,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
 
     /// [`Self::paint_zones`] for a group drag.
     pub(super) fn paint_group_zones(&self, painter: &egui::Painter, drag: &GroupDrag<P>, pointer: Pos2, proposal: Option<&DropProposal<P>>) -> bool {
-        let window = drag.gesture == GroupGesture::Window;
-        if !self.style.side_edge_zones || self.extra_proposal(&drag.members, pointer, window).is_some() {
+        if !self.style.side_edge_zones || self.extra_proposal(&drag.members, pointer, self.looks_through(drag)).is_some() {
             return false;
         }
         let Some(target) = self.group_target(drag, pointer) else { return false };
@@ -480,7 +732,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         use crate::docking::targets::{header_height, usable, zone_shape};
         let zone_of = |proposal: &DropProposal<P>| match proposal.placement {
             _ if proposal.noop => None,
-            Placement::Split(zone) => Some(zone),
+            Placement::Split(zone) | Placement::SplitSized { zone, .. } => Some(zone),
             Placement::Tab { .. } => Some(Zone::Center),
             _ => None,
         };
@@ -489,7 +741,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         let takes = |zone: Zone, point: Pos2| at(point).as_ref().and_then(zone_of) == Some(zone);
         let mut shapes: Vec<(Zone, Vec<Pos2>)> = [Zone::Left, Zone::Right, Zone::Top, Zone::Bottom, Zone::Center]
             .into_iter()
-            .filter_map(|zone| Some((zone, zone_shape(target.rect, header, self.style.zone_depth, zone)?)))
+            .filter_map(|zone| Some((zone, zone_shape(target.rect, header, SIDE_EDGE_ZONE_DEPTH, zone)?)))
             .filter(|(zone, points)| takes(*zone, centroid(points).to_pos2()))
             .collect();
         let strip = target.tab_strip.map(|strip| strip.intersect(target.rect)).filter(|strip| usable(*strip) && takes(Zone::Center, strip.center()));
@@ -635,12 +887,31 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             let painter = self.preview_painter(ctx);
             if let Some(rect) = feedback.preview.filter(|rect| crate::docking::targets::usable(*rect)) {
                 drop_preview(&painter, rect, self.style.accent, true);
+                // A window moving by its title bar fades over it, as over the renderer's own.
+                ctx.data_mut(|d| d.insert_temp(self.id.with(GROUP_HIGHLIGHTED), true));
             }
             if let Some(rect) = feedback.insertion.filter(|rect| crate::docking::targets::usable(*rect)) {
                 painter.rect_filled(rect, 0.0, self.style.accent);
             }
         }
         true
+    }
+}
+
+/// The move a single tab's drag makes.
+fn tab_action<P: Clone>(panel: &P, to: Target<P>) -> Action<P> {
+    match to {
+        Target::At { anchor, placement } => Action::Move { panel: panel.clone(), anchor, placement },
+        to => Action::MovePanel { panel: panel.clone(), to },
+    }
+}
+
+/// Whether the drawn group `node` holds `panel`.
+fn holds<P: PartialEq>(node: &Node<P>, panel: &P) -> bool {
+    match node {
+        Node::Tabs { panels, .. } => panels.contains(panel),
+        Node::Stack { entries } => entries.iter().any(|e| &e.panel == panel),
+        Node::Split { .. } | Node::Dock { .. } => false,
     }
 }
 

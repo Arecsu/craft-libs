@@ -64,6 +64,7 @@ pub struct DockDriver<P, C> {
     input_hook: Option<InputHook>,
     style: Option<StyleFn>,
     shapes: Vec<ClippedShape>,
+    ime: Option<egui::output::IMEOutput>,
     time: f64,
 }
 
@@ -75,7 +76,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static, C: DockContent<P>> Do
             ctx: Context::default(),
             layout,
             content,
-            id: Id::new("dock-driver"),
+            id: Id::unique("dock-driver"),
             screen,
             area: screen,
             focused: true,
@@ -96,6 +97,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static, C: DockContent<P>> Do
             input_hook: None,
             style: None,
             shapes: Vec::new(),
+            ime: None,
             time: 0.0,
         };
         driver.settle();
@@ -133,6 +135,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static, C: DockContent<P>> Do
             let mut host = host.borrow_mut();
             (host.time, host.screen, host.modifiers) = (self.time, self.screen, self.modifiers);
             host.frames += 1;
+            host.read_pointer();
             input.viewports = host.infos();
             input.focused = host.focus == Some(egui::ViewportId::ROOT);
         }
@@ -140,6 +143,8 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static, C: DockContent<P>> Do
         let monitors = self.monitors.clone();
         #[cfg(feature = "native-windows")]
         let input_hook = self.input_hook.clone();
+        #[cfg(feature = "native-windows")]
+        let window_system = self.host.as_ref().map_or(Default::default(), |host| host.borrow().window_system());
         let (style_fn, maximized, raise, auto, bounds, locked, native, blocked) = (
             &self.style,
             self.maximized.clone(),
@@ -170,6 +175,10 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static, C: DockContent<P>> Do
                     dock = dock.float_bounds(bounds);
                 }
                 #[cfg(feature = "native-windows")]
+                {
+                    dock = dock.window_system(window_system);
+                }
+                #[cfg(feature = "native-windows")]
                 if let Some(hook) = input_hook.clone() {
                     dock = dock.native_input_hook(move |ctx, input| hook(ctx, input));
                 }
@@ -184,6 +193,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static, C: DockContent<P>> Do
             host.land();
         }
         self.shapes = full.shapes;
+        self.ime = full.platform_output.ime;
         output
     }
 
@@ -247,6 +257,25 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static, C: DockContent<P>> Do
         self.window_step(window, vec![Event::PointerMoved(from), self.button(from, true)]);
         self.window_step(window, vec![Event::PointerMoved(from + NUDGE)]);
         self.window_step(window, vec![Event::PointerMoved(to)])
+    }
+
+    /// Move the pointer to the desktop point `point` in the native window of `window`, and
+    /// step. The window gets the point in its coordinates. While the window system moves the
+    /// window ([`NativeHost::moves_windows`]), the window goes where the pointer keeps its grab.
+    #[cfg(feature = "native-windows")]
+    pub fn window_pointer(&mut self, window: u64, point: Pos2) -> DockOutput<P> {
+        let viewport = self.viewport(window);
+        {
+            let mut host = self.host();
+            let grab = host.os_drag.filter(|(dragged, _)| *dragged == viewport).map(|(_, grab)| grab);
+            if let Some(target) = host.windows.get_mut(&viewport) {
+                if let Some(grab) = grab {
+                    target.rect = Rect::from_min_size(point - grab, target.rect.size());
+                }
+                target.events.push(Event::PointerMoved(point - target.rect.min.to_vec2()));
+            }
+        }
+        self.step(Vec::new())
     }
 
     /// Release at `pos` in a native window, in its coordinates.
@@ -348,6 +377,11 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static, C: DockContent<P>> Do
         &self.shapes
     }
 
+    /// The IME descriptor the main window's last frame published.
+    pub fn ime(&self) -> Option<&egui::output::IMEOutput> {
+        self.ime.as_ref()
+    }
+
     /// Whether the last frame filled `rect` (an insertion line or a split preview).
     pub fn filled(&self, rect: Rect) -> bool {
         self.shapes.iter().any(|clipped| match &clipped.shape {
@@ -400,11 +434,22 @@ pub struct NativeHost {
     /// `OuterPosition` lands a frame late, at the end of the frame after the command. That
     /// frame still reports the old place, and gets pointer events relative to it.
     pub lag: bool,
+    /// The window system moves a window for `StartDrag` itself, as AppKit does: the window
+    /// keeps the pointer where it was in it, and reports its place as where the drag began until
+    /// the release. Meanwhile it tells the cursor and [`Self::held`].
+    pub moves_windows: bool,
+    /// The primary button is down, as the window system tells it with
+    /// [`Self::moves_windows`]: set by the presses and releases given to windows, and by a test
+    /// that has the window system report a release before egui does.
+    pub held: bool,
     pub windows: std::collections::HashMap<egui::ViewportId, HostWindow>,
     /// Every command sent to a native window or the main window, in order.
     pub commands: Vec<(egui::ViewportId, egui::ViewportCommand)>,
     /// Moves waiting to land under `lag`: window, content position, frame sent.
     late: Vec<(egui::ViewportId, Pos2, usize)>,
+    cursor: Option<Pos2>,
+    /// The window it moves for `StartDrag`, and where the pointer is in it.
+    os_drag: Option<(egui::ViewportId, egui::Vec2)>,
     frames: usize,
     /// The driver's modifiers: the keyboard's, whichever window has focus.
     modifiers: Modifiers,
@@ -434,6 +479,12 @@ pub struct HostWindow {
     pub dropped_files: Vec<egui::DroppedFileHandle>,
     /// Shapes of its last frame.
     pub shapes: Vec<ClippedShape>,
+    /// The IME descriptor its last frame published.
+    pub ime: Option<egui::output::IMEOutput>,
+    /// Where it reports its content while the window system moves it.
+    reported: Option<Pos2>,
+    /// The last pointer position it was given, in its coordinates.
+    pointer: Option<Pos2>,
 }
 
 #[cfg(feature = "native-windows")]
@@ -446,9 +497,13 @@ impl NativeHost {
             no_position: false,
             frame: egui::Vec2::ZERO,
             lag: false,
+            moves_windows: false,
+            held: false,
             windows: Default::default(),
             commands: Vec::new(),
             late: Vec::new(),
+            cursor: None,
+            os_drag: None,
             frames: 0,
             modifiers: Modifiers::NONE,
             screen: Rect::NOTHING,
@@ -469,8 +524,39 @@ impl NativeHost {
         };
         let main = Rect::from_min_size(self.origin, self.screen.size());
         std::iter::once((egui::ViewportId::ROOT, info(egui::ViewportId::ROOT, main)))
-            .chain(self.windows.iter().map(|(id, window)| (*id, info(*id, window.rect))))
+            .chain(
+                self.windows
+                    .iter()
+                    .map(|(id, window)| (*id, info(*id, Rect::from_min_size(window.reported.unwrap_or(window.rect.min), window.rect.size())))),
+            )
             .collect()
+    }
+
+    /// What it tells the dock area.
+    fn window_system(&self) -> super::render::WindowSystem {
+        let moves = self.moves_windows;
+        super::render::WindowSystem::Host { cursor: self.cursor, held: moves.then_some(self.held), moves }
+    }
+
+    /// With [`Self::moves_windows`], the cursor and the button as the pointer events waiting
+    /// for each window leave them.
+    fn read_pointer(&mut self) {
+        if !self.moves_windows {
+            return;
+        }
+        for window in self.windows.values_mut() {
+            for event in &window.events {
+                match event {
+                    Event::PointerMoved(pos) => window.pointer = Some(*pos),
+                    Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, .. } => {
+                        window.pointer = Some(*pos);
+                        self.held = *pressed;
+                    }
+                    _ => continue,
+                }
+                self.cursor = window.pointer.map(|p| window.rect.min + p.to_vec2());
+            }
+        }
     }
 
     /// Run one native window's frame.
@@ -492,6 +578,9 @@ impl NativeHost {
                 hovered_files: Vec::new(),
                 dropped_files: Vec::new(),
                 shapes: Vec::new(),
+                ime: None,
+                reported: None,
+                pointer: None,
             });
             let mut viewports = host.infos();
             let (time, focused, modifiers) = (host.time, host.focus == Some(id), host.modifiers);
@@ -521,10 +610,12 @@ impl NativeHost {
         host.apply(&full);
         if let Some(window) = host.windows.get_mut(&id) {
             window.shapes = full.shapes;
+            window.ime = full.platform_output.ime;
         }
     }
 
-    /// End a frame: moves sent in an earlier one land.
+    /// End a frame: moves sent in an earlier one land, and a move the window system carries out
+    /// ends once the button is up.
     fn land(&mut self) {
         let frames = self.frames;
         let (landed, late) = std::mem::take(&mut self.late).into_iter().partition::<Vec<_>, _>(|(.., sent)| *sent < frames);
@@ -533,6 +624,12 @@ impl NativeHost {
             if let Some(window) = self.windows.get_mut(&id) {
                 window.rect = Rect::from_min_size(pos, window.rect.size());
             }
+        }
+        if !self.held
+            && let Some((id, _)) = self.os_drag.take()
+            && let Some(window) = self.windows.get_mut(&id)
+        {
+            window.reported = None;
         }
     }
 
@@ -547,6 +644,11 @@ impl NativeHost {
                     egui::ViewportCommand::OuterPosition(pos) => window.rect = Rect::from_min_size(*pos + self.frame, window.rect.size()),
                     egui::ViewportCommand::InnerSize(size) => window.rect = Rect::from_min_size(window.rect.min, *size),
                     egui::ViewportCommand::Visible(visible) => window.visible = *visible,
+                    egui::ViewportCommand::StartDrag if self.moves_windows && self.held => {
+                        let grab = window.pointer.unwrap_or_default().to_vec2();
+                        window.reported = Some(window.rect.min);
+                        self.os_drag = Some((*id, grab));
+                    }
                     _ => {}
                 }
             }

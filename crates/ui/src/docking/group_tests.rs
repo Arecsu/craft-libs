@@ -49,6 +49,9 @@ struct TestContent {
     header_clicks: usize,
     /// The strip width the last header was sized for.
     strip_width: std::cell::Cell<f32>,
+    /// Width the extra tabs ask for, and the rect they were last drawn in.
+    extra: f32,
+    extra_rect: Option<Rect>,
     floating_size: Option<Vec2>,
     host_owned: bool,
     whole_group: bool,
@@ -59,6 +62,8 @@ struct TestContent {
 }
 
 impl DockContent<u32> for TestContent {
+    /// Test body that fills its rect when `fill` is set, otherwise takes the
+    /// configured height or draws a one-line `Body` label.
     fn body(&mut self, ui: &mut egui::Ui, _: &u32) {
         if self.fill {
             ui.allocate_rect(ui.max_rect(), egui::Sense::hover());
@@ -72,6 +77,8 @@ impl DockContent<u32> for TestContent {
     fn logical_label(&self, panel: &u32) -> String {
         format!("Panel {panel}")
     }
+    /// Mark panels in `protected` as protected and leave the rest with default
+    /// permissions.
     fn permissions(&self, panel: &u32) -> Permissions {
         if self.protected.contains(panel) { Permissions::PROTECTED } else { Permissions::default() }
     }
@@ -90,6 +97,12 @@ impl DockContent<u32> for TestContent {
         if ui.button("≡").clicked() {
             self.header_clicks += 1;
         }
+    }
+    fn group_extra_tabs_width(&self, _: &[u32], _: &u32, _: bool) -> f32 {
+        self.extra
+    }
+    fn group_extra_tabs(&mut self, ui: &mut egui::Ui, _: &[u32], _: &u32, _: bool) {
+        self.extra_rect = Some(ui.max_rect());
     }
 }
 
@@ -114,6 +127,8 @@ impl Driver {
         Self::with(layout, TestContent::default(), Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 600.0)))
     }
 
+    /// Create a group test driver for `layout`, `content` and `area`, then settle
+    /// two frames.
     fn with(layout: Layout<u32>, content: TestContent, area: Rect) -> Self {
         let mut driver = Self {
             ctx: Context::default(),
@@ -132,6 +147,8 @@ impl Driver {
         driver
     }
 
+    /// One 800×600 frame with inserted modifier events and optional transparent/tweaked style or
+    /// custom area. Captures shapes, clears texture deltas, and returns `DockOutput`.
     fn frame(&mut self, mut events: Vec<Event>) -> DockOutput<u32> {
         let mut output = DockOutput::default();
         events.insert(0, Event::ModifiersChanged(self.modifiers));
@@ -152,7 +169,7 @@ impl Driver {
             }
             tweak(&mut style);
             ui.scope_builder(UiBuilder::new().max_rect(area), |ui| {
-                output = DockArea::new(Id::new(AREA)).show_content(ui, layout, &style, content);
+                output = DockArea::new(Id::unique(AREA)).show_content(ui, layout, &style, content);
             });
         });
         full.textures_delta.clear();
@@ -160,6 +177,8 @@ impl Driver {
         output
     }
 
+    /// Run one frame, assert it reports no error, and apply each returned action
+    /// with the content's permissions.
     fn step(&mut self, events: Vec<Event>) -> DockOutput<u32> {
         let output = self.frame(events);
         assert!(output.error.is_none(), "{output:?}");
@@ -170,12 +189,15 @@ impl Driver {
         output
     }
 
+    /// Read the response rectangle for the dock widget named `name` and scoped to
+    /// `panel`.
     fn rect(&self, name: &str, panel: u32) -> Rect {
-        self.ctx.read_response(Id::new(AREA).with((name, Some(&panel)))).unwrap().rect
+        self.ctx.read_response(Id::unique(AREA).with((name, Some(&panel)))).unwrap().rect
     }
 
+    /// Read the response rectangle for `panel`'s tab.
     fn tab(&self, panel: u32) -> Rect {
-        self.ctx.read_response(Id::new(AREA).with(("tab", &panel))).unwrap().rect
+        self.ctx.read_response(Id::unique(AREA).with(("tab", &panel))).unwrap().rect
     }
 
     /// Press at `from`, pass the drag threshold, move to `to`; returns the last move's output.
@@ -220,6 +242,9 @@ fn moved_group(actions: &[Action<u32>]) -> Option<&Target<u32>> {
 }
 
 #[test]
+/// A group bar dropped on another strip emits one `MoveGroup` and keeps panel
+/// order and the active panel; dropped on empty space it floats at its docked
+/// width and 600 pt height; inside a column it joins the group below.
 fn docked_two_tab_group_drags_by_its_bar_and_keeps_order_and_active_tab() {
     // Onto another group's strip: one MoveGroup, both panels in order, 3 still selected.
     let mut d = Driver::new(frames());
@@ -255,6 +280,9 @@ fn docked_two_tab_group_drags_by_its_bar_and_keeps_order_and_active_tab() {
 }
 
 #[test]
+/// In a 300 pt strip with eight tabs and a 24 pt header, the drag bar keeps at least 40 pt and ends
+/// at the header; tabs shrink and overflow before it is narrowed, and dragging it floats all eight
+/// panels as one group.
 fn drag_bar_survives_a_strip_full_of_tabs() {
     let layout = Layout { root: Some(tabs(&[1, 2, 3, 4, 5, 6, 7, 8], 0)), floating: Vec::new() };
     let content = TestContent { header: 24.0, ..Default::default() };
@@ -263,10 +291,37 @@ fn drag_bar_survives_a_strip_full_of_tabs() {
     assert!(bar.width() >= 40.0, "{bar:?}");
     assert_eq!(bar.right(), 300.0 - 24.0, "the bar ends at the header");
     assert_eq!(d.content.strip_width.get(), 300.0, "the header is sized for the whole strip");
-    assert!(d.ctx.read_response(Id::new(AREA).with(("overflow", &1u32))).is_some(), "tabs shrink, then overflow, before the bar narrows");
+    assert!(d.ctx.read_response(Id::unique(AREA).with(("overflow", &1u32))).is_some(), "tabs shrink, then overflow, before the bar narrows");
     let out = d.drag(bar.center(), pos2(500.0, 300.0));
     assert!(matches!(moved_group(&out.actions), Some(Target::Float { .. })), "{:?}", out.actions);
     assert_eq!(d.layout.floating[0].groups()[0].panels.len(), 8);
+}
+
+#[test]
+/// The extra tabs follow the last panel tab, before the drag bar and the header. In a narrow row
+/// they shrink to the minimum tab width while the panel tabs overflow, and the bar keeps its
+/// width; a tab dropped on them goes after the last panel tab.
+fn extra_tabs_follow_the_panel_tabs_and_overflow_with_them() {
+    let content = TestContent { header: 24.0, extra: 100.0, ..Default::default() };
+    let layout = Layout { root: Some(tabs(&[1, 2], 0)), floating: Vec::new() };
+    let mut d = Driver::with(layout, content, Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 400.0)));
+    let (extra, bar) = (d.content.extra_rect.expect("extra tabs drawn"), d.rect("drag-bar", 1));
+    assert_eq!((extra.left(), extra.width()), (d.tab(2).right(), 100.0));
+    assert_eq!((bar.left(), bar.right()), (extra.right(), 600.0 - 24.0), "the bar and the header follow");
+    d.drag(d.tab(1).center(), extra.center());
+    assert_eq!(d.layout.root, Some(tabs(&[2, 1], 1)), "a drop on the extra tabs appends");
+
+    let content = TestContent { header: 24.0, extra: 100.0, ..Default::default() };
+    let layout = Layout { root: Some(tabs(&[1, 2, 3], 0)), floating: Vec::new() };
+    let d = Driver::with(layout, content, Rect::from_min_size(pos2(0.0, 0.0), vec2(200.0, 400.0)));
+    let overflow = d.ctx.read_response(Id::unique(AREA).with(("overflow", &1u32))).expect("the panel tabs overflow").rect;
+    let (extra, bar) = (d.content.extra_rect.expect("extra tabs drawn"), d.rect("drag-bar", 1));
+    assert_eq!(overflow.left(), d.tab(1).right());
+    assert_eq!(extra.left(), overflow.right(), "the extra tabs follow the overflow button");
+    let min = DockStyle::default().min_tab_width;
+    assert!(extra.width() >= min - 0.5 && extra.width() < 100.0, "{extra:?}");
+    assert_eq!((bar.left(), bar.right()), (extra.right(), 200.0 - 24.0));
+    assert!(bar.width() >= 40.0, "{bar:?}");
 }
 
 /// Panels with ordinary names.
@@ -354,7 +409,7 @@ fn group_drop_on_a_frame_edge_splits_and_on_a_protected_canvas_floats() {
     let canvas = || TestContent { protected: vec![1], ..Default::default() };
     let area = Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 600.0));
     let mut d = Driver::with(frames(), TestContent::default(), area);
-    let out = d.drag(d.rect("drag-bar", 2).center(), pos2(20.0, 300.0));
+    let out = d.drag(d.rect("drag-bar", 2).center(), pos2(40.0, 300.0));
     assert!(matches!(moved_group(&out.actions), Some(Target::At { anchor: 1, placement: Placement::Split(Zone::Left) })), "{:?}", out.actions);
     let Some(Node::Split { first, second, .. }) = &d.layout.root else { panic!() };
     assert_eq!(**first, tabs(&[2, 3], 1));
@@ -362,7 +417,7 @@ fn group_drop_on_a_frame_edge_splits_and_on_a_protected_canvas_floats() {
 
     // A protected canvas takes nothing, at its center or its edge: no join, no split, no
     // preview; the group floats there.
-    for at in [pos2(150.0, 300.0), pos2(20.0, 300.0)] {
+    for at in [pos2(150.0, 300.0), pos2(40.0, 300.0)] {
         let mut d = Driver::with(frames(), canvas(), area);
         let out = d.drag(d.rect("drag-bar", 2).center(), at);
         assert!(matches!(moved_group(&out.actions), Some(Target::Float { .. })), "{:?}", out.actions);
@@ -371,6 +426,8 @@ fn group_drop_on_a_frame_edge_splits_and_on_a_protected_canvas_floats() {
 }
 
 #[test]
+/// Holding Ctrl or Command at release turns either a group-bar drop or a tab
+/// drop into a float instead of a dock.
 fn ctrl_or_cmd_held_at_release_always_floats() {
     for modifiers in [Modifiers::CTRL, Modifiers::MAC_CMD, Modifiers::COMMAND] {
         let mut d = Driver::new(frames());
@@ -392,6 +449,8 @@ fn ctrl_or_cmd_held_at_release_always_floats() {
 }
 
 #[test]
+/// Escape, focus loss, pointer exit and `cancel_drag` each end a held group drag with no actions or
+/// drop; releasing changes nothing and the layout equals the original.
 fn group_drag_escape_focus_loss_pointer_exit_and_cancel_drag_leave_the_layout_unchanged() {
     for case in ["escape", "focus", "exit", "cancel"] {
         let mut d = Driver::new(frames());
@@ -408,7 +467,7 @@ fn group_drag_escape_focus_loss_pointer_exit_and_cancel_drag_leave_the_layout_un
             }
             "exit" => d.step(vec![Event::PointerGone]),
             _ => {
-                cancel_drag::<u32>(&d.ctx, Id::new(AREA));
+                cancel_drag::<u32>(&d.ctx, Id::unique(AREA));
                 d.step(vec![Event::PointerMoved(target + vec2(1.0, 0.0))])
             }
         };
@@ -416,7 +475,7 @@ fn group_drag_escape_focus_loss_pointer_exit_and_cancel_drag_leave_the_layout_un
         let out = d.step(vec![Event::PointerMoved(target), button(target, false)]);
         assert!(out.actions.is_empty() && out.group_drop.is_none() && out.group_drag.is_none(), "{case}: {out:?}");
         assert_eq!(d.layout, frames(), "{case}");
-        assert!(!is_dragging::<u32>(&d.ctx, Id::new(AREA)), "{case}");
+        assert!(!is_dragging::<u32>(&d.ctx, Id::unique(AREA)), "{case}");
     }
 }
 
@@ -503,7 +562,8 @@ fn release_over_own_position_is_a_noop() {
 #[test]
 fn floating_border_and_drag_bar_move_and_cancel_as_a_group() {
     for name in ["drag-border", "drag-bar"] {
-        let layout = Layout { root: Some(tabs(&[1], 0)), floating: vec![Floating::single(vec![5, 6], 1, [80.0, 70.0, 300.0, 220.0])] };
+        // Nothing docked: a header drag of a window's only group looks through the window.
+        let layout = Layout { root: None, floating: vec![Floating::single(vec![5, 6], 1, [80.0, 70.0, 300.0, 220.0])] };
         let mut d = Driver::new(layout.clone());
         let from = d.rect(name, 5).center();
         d.hold(from, from + vec2(50.0, 40.0));
@@ -521,8 +581,10 @@ fn floating_border_and_drag_bar_move_and_cancel_as_a_group() {
 }
 
 #[test]
+/// Moving a floating window by eight fractional pointer steps lands within one
+/// point of the accumulated 80.3 × 60.7 pt offset, without step-rounding drift.
 fn floating_border_movement_does_not_accumulate_fractional_step_rounding() {
-    let layout = Layout { root: Some(tabs(&[1], 0)), floating: vec![Floating::single(vec![5, 6], 1, [80.0, 70.0, 300.0, 220.0])] };
+    let layout = Layout { root: None, floating: vec![Floating::single(vec![5, 6], 1, [80.0, 70.0, 300.0, 220.0])] };
     let mut d = Driver::new(layout);
     let from = d.rect("drag-border", 5).center();
     d.step(vec![Event::PointerMoved(from), button(from, true)]);
@@ -535,6 +597,8 @@ fn floating_border_movement_does_not_accumulate_fractional_step_rounding() {
 }
 
 #[test]
+/// With host-owned headers, dragging either the border or the bar reaches
+/// `whole_group`, emits no action or group drop, and leaves the layout unchanged.
 fn docked_header_drag_reaches_the_host_hook_and_preserves_the_group() {
     for name in ["drag-border", "drag-bar"] {
         let content = TestContent { host_owned: true, ..Default::default() };
@@ -547,10 +611,14 @@ fn docked_header_drag_reaches_the_host_hook_and_preserves_the_group() {
 }
 
 #[test]
+/// A lone protected panel renders neither a tab nor a drag bar, while another group still has its
+/// bar.
 fn a_lone_protected_panel_draws_no_strip_and_no_bar() {
     struct Bare;
     impl DockContent<u32> for Bare {
+        /// A bare content body that draws nothing.
         fn body(&mut self, _: &mut egui::Ui, _: &u32) {}
+        /// Mark panel 1 protected and leave every other panel with default permissions.
         fn permissions(&self, panel: &u32) -> Permissions {
             if *panel == 1 { Permissions::PROTECTED } else { Permissions::default() }
         }
@@ -558,28 +626,30 @@ fn a_lone_protected_panel_draws_no_strip_and_no_bar() {
     let ctx = Context::default();
     for _ in 0..2 {
         ctx.run_ui(RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0))), ..Default::default() }, |ui| {
-            DockArea::new(Id::new(AREA)).show_content(ui, &frames(), &DockStyle::from_ui(ui), &mut Bare);
+            DockArea::new(Id::unique(AREA)).show_content(ui, &frames(), &DockStyle::from_ui(ui), &mut Bare);
         })
         .textures_delta
         .clear();
     }
-    assert!(ctx.read_response(Id::new(AREA).with(("drag-bar", Some(&1u32)))).is_none());
-    assert!(ctx.read_response(Id::new(AREA).with(("tab", &1u32))).is_none());
-    assert!(ctx.read_response(Id::new(AREA).with(("drag-bar", Some(&2u32)))).is_some());
+    assert!(ctx.read_response(Id::unique(AREA).with(("drag-bar", Some(&1u32)))).is_none());
+    assert!(ctx.read_response(Id::unique(AREA).with(("tab", &1u32))).is_none());
+    assert!(ctx.read_response(Id::unique(AREA).with(("drag-bar", Some(&2u32)))).is_some());
 }
 
 #[test]
+/// The drag bar's context menu contains Close Tab Group, Minimize, Float Tab Group and Move Group
+/// To; clicking Close emits `CloseGroup`, and Enter on the focused bar opens the menu.
 fn drag_bar_menu_has_the_group_items_and_opens_from_the_keyboard() {
     use egui_kittest::{Harness, kittest::Queryable};
     let mut h = Harness::builder().with_size(vec2(800.0, 600.0)).build_ui_state(
         |ui, (content, actions): &mut (TestContent, Vec<Action<u32>>)| {
-            let out = DockArea::new(Id::new(AREA)).show_content(ui, &docked(), &DockStyle::from_ui(ui), content);
+            let out = DockArea::new(Id::unique(AREA)).show_content(ui, &docked(), &DockStyle::from_ui(ui), content);
             actions.extend(out.actions);
         },
         (TestContent { protected: vec![0], ..Default::default() }, Vec::new()),
     );
     h.run_steps(2);
-    let bar_id = Id::new(AREA).with(("drag-bar", Some(&2u32)));
+    let bar_id = Id::unique(AREA).with(("drag-bar", Some(&2u32)));
     let at = h.ctx.read_response(bar_id).unwrap().rect.center();
     h.input_mut().events.extend([
         Event::PointerMoved(at),
@@ -597,13 +667,15 @@ fn drag_bar_menu_has_the_group_items_and_opens_from_the_keyboard() {
 
     h.ctx.memory_mut(|memory| memory.request_focus(bar_id));
     h.run_steps(1);
-    assert!(DockArea::<u32>::new(Id::new(AREA)).chrome_has_focus(&h.ctx, &docked()));
+    assert!(DockArea::<u32>::new(Id::unique(AREA)).chrome_has_focus(&h.ctx, &docked()));
     h.input_mut().events.push(key(egui::Key::Enter));
     h.run_steps(2);
     assert!(egui::Popup::is_any_open(&h.ctx));
 }
 
 #[test]
+/// Dragging one group out of a two-group floating stack floats only that group
+/// at the stack width and its recorded height in the stack.
 fn a_group_dragged_out_of_a_floating_stack_tears_out_alone() {
     let stack = Floating::stack(vec![Group::new(vec![5], 0), Group::new(vec![6, 7], 1)], [80.0, 70.0, 300.0, 400.0]).unwrap();
     let layout = Layout { root: Some(tabs(&[1], 0)), floating: vec![stack] };
@@ -617,13 +689,16 @@ fn a_group_dragged_out_of_a_floating_stack_tears_out_alone() {
 }
 
 #[test]
+/// A docked panel floats at the title bar plus strip plus recorded content height, with a 120 pt
+/// minimum and the 320 pt docked cap; a host floating size supplies the width and caps the height,
+/// and a group uses its active panel's content height.
 fn a_short_docked_panel_floats_at_its_content_height_up_to_its_floating_size() {
     let title = crate::docking::chrome::TITLE_HEIGHT;
     let float = |body: f32, floating_size: Option<Vec2>| {
         let content = TestContent { body_height: Some(body), floating_size, ..Default::default() };
         let mut d = Driver::with(docked(), content, Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 600.0)));
         let strip = d.rect("drag-bar", 4).height();
-        let recorded = crate::docking::float_space::<u32>(&d.ctx, Id::new(AREA)).unwrap().panel(&4).unwrap();
+        let recorded = crate::docking::float_space::<u32>(&d.ctx, Id::unique(AREA)).unwrap().panel(&4).unwrap();
         let target = pos2(400.0, 300.0);
         d.hold(d.tab(4).center(), target);
         d.modifiers = Modifiers::COMMAND;
@@ -657,6 +732,8 @@ fn a_short_docked_panel_floats_at_its_content_height_up_to_its_floating_size() {
 }
 
 #[test]
+/// A fill-height panel floats at the 320 pt docked cap without a host size
+/// and at the host's height when one is supplied.
 fn a_panel_that_fills_its_frame_floats_at_its_floating_size_or_320() {
     let float = |floating_size: Option<Vec2>| {
         let content = TestContent { fill: true, floating_size, ..Default::default() };
@@ -678,9 +755,11 @@ fn a_panel_that_fills_its_frame_floats_at_its_floating_size_or_320() {
 }
 
 #[test]
+/// Keyboard focus on a tab is kept across a user drag, but a layout reset that moves the tab clears
+/// it and reports no new focus; closing the panel also gives focus up.
 fn tab_focus_follows_only_the_users_input() {
     let mut d = Driver::new(docked());
-    let tab = Id::new(AREA).with(("tab", &4u32));
+    let tab = Id::unique(AREA).with(("tab", &4u32));
     // Keyboard focus as Tab gives it.
     d.ctx.memory_mut(|m| m.request_focus(tab));
     d.step(vec![]);
@@ -715,12 +794,21 @@ fn tab_focus_follows_only_the_users_input() {
 }
 
 #[test]
+/// Wheel selection is off by default. With the floating frame style, wheel up selects the previous
+/// tab and stops at the first, trackpad points accumulate into a notch, huge deltas clamp at both
+/// ends, and middle-click closes the tab.
 fn frame_tabs_follow_the_wheel_and_close_on_a_middle_click() {
     let second = |d: &Driver| match &d.layout.root {
         Some(Node::Split { second, .. }) => (**second).clone(),
         _ => panic!("{:?}", d.layout.root),
     };
-    let wheel = |unit, y| Event::MouseWheel { unit, delta: vec2(0.0, y), phase: egui::TouchPhase::Move, modifiers: Modifiers::NONE };
+    let wheel = |unit, y| Event::MouseWheel {
+        source: egui::MouseWheelSource::Unknown,
+        unit,
+        delta: vec2(0.0, y),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    };
     let middle = |pos, pressed| Event::PointerButton { pos, button: PointerButton::Middle, pressed, modifiers: Modifiers::NONE };
 
     // Off by default.

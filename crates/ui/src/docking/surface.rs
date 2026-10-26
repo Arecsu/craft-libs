@@ -1,4 +1,4 @@
-use std::{fmt::Debug, hash::Hash};
+use std::{collections::HashMap, fmt::Debug, hash::Hash};
 
 use egui::{Color32, Context, FontId, Id, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
@@ -53,23 +53,52 @@ pub struct DockStyle {
     pub blocked_dim: Color32,
     /// Height of a floating window's title bar.
     pub title_height: f32,
-    /// Width of the band along the layout's outer edge that splits at the root.
+    /// Width of the band along the layout's outer edge that splits at the root (28 pt). It is
+    /// at most a quarter of the layout's width and height. Not used with
+    /// [`Self::side_edge_zones`], whose band is 8 pt.
     pub edge_band: f32,
-    /// The outer edge band also runs along the left and right edges, where a drop adds a
-    /// full-height column. Off: only the top and bottom edges add a full-width row.
+    /// The split-tree profile. The outer edge band also runs along the left and right edges,
+    /// where a drop adds a full-height column. A group's side zones are trapezoids
+    /// [`crate::docking::SIDE_EDGE_ZONE_DEPTH`] deep (see [`crate::docking::drop_zone`]), a drag
+    /// outlines them, and a split previews the half of the group it takes. Off: only the top and
+    /// bottom edges add a full-width row, a group's zones are [`Self::side_zone_fraction`] of its
+    /// body, and every preview is a line or a tab outline.
     pub side_edge_zones: bool,
-    /// How far a group's side drop zones reach into its body, below the tab strip. All four
-    /// zones share one depth: this, or a quarter of the body's smaller side when that is less,
-    /// so the body keeps a center.
-    pub zone_depth: f32,
-    /// [D] The docked area's left and right edges, where no dock is yet, take a drop as a new
-    /// dock (see [`Self::new_dock_band`]).
+    /// Which sides of the layout's outer edge, and of a group that takes no tabs (a canvas)
+    /// without [`Self::new_dock_zones`], take a drop (all four). With [`Self::new_dock_zones`]
+    /// a canvas body takes no drop, and without [`Self::side_edge_zones`] the outer left and
+    /// right edges are new docks, so only top and bottom apply there. A dock-column app whose
+    /// palettes dock only at the left and right sets [`crate::docking::Sides::NONE`] with
+    /// [`Self::new_dock_zones`] on. Not used with [`Self::side_edge_zones`]. Groups that take
+    /// tabs keep all four sides.
+    pub drop_edges: super::Sides,
+    /// The share of a group's body, below the tab strip, that means "beside" on each side: of
+    /// its width from the left and right edges, of its height from the top and bottom edges
+    /// (one third, at most one half). The middle joins the group as a tab. Not used with
+    /// [`Self::side_edge_zones`].
+    pub side_zone_fraction: f32,
+    /// Width of the line that a drop on a band along the layout's outer edge (a new dock, a new
+    /// outermost column or the outer edge band), a drop between the icon groups of an iconic
+    /// column, and every dock drop with [`Self::side_edge_zones`] preview with, and of the line
+    /// [`crate::docking::ZoneRule::Fraction`] gives hosts as a side's preview (4 pt, more than
+    /// zero). Other drops beside a group, column or dock preview the rect the moved panels
+    /// take. Border bands reach 4 pt past this line into a tab strip.
+    pub drop_line_width: f32,
+    /// [D] The docking profile. The docked area's left and right edges, where no dock is yet,
+    /// take a drop as a new dock (see [`Self::new_dock_band`]). Without
+    /// [`Self::side_edge_zones`], the body of a frame or floating group that takes no tabs (a
+    /// canvas) takes no drop: a release there floats as over no target.
     pub new_dock_zones: bool,
     /// [D] Height of the bar above each dock column. It drags the column and holds its »/« button.
     pub column_bar_height: f32,
-    /// [D] Height of the band around the seam between two stacked groups in a dock column.
+    /// [D] Height of the band centred on the seam between two stacked groups in a dock column
+    /// (28 pt).
     pub seam_band: f32,
-    /// [D] Width of the band along the docked area's left and right edges that makes a new dock.
+    /// [D] Width of the band centred on each edge of a dock column, where a drop makes a new
+    /// column (28 pt).
+    pub column_edge_band: f32,
+    /// [D] Width of the band along the docked area's left and right edges, and inside an empty
+    /// dock, that makes a new dock (28 pt).
     pub new_dock_band: f32,
     /// [D] Side of a panel icon in an iconic column; each icon row is 10 pt taller.
     pub icon_size: f32,
@@ -173,13 +202,16 @@ impl DockStyle {
             floating_stroke: visuals.window_stroke,
             blocked_dim: visuals.panel_fill.gamma_multiply(0.6),
             title_height: super::chrome::TITLE_HEIGHT,
-            edge_band: 8.0,
+            edge_band: 28.0,
             side_edge_zones: false,
-            zone_depth: 40.0,
+            drop_edges: super::Sides::ALL,
+            side_zone_fraction: 1.0 / 3.0,
+            drop_line_width: 4.0,
             new_dock_zones: true,
             column_bar_height: 14.0,
-            seam_band: 8.0,
-            new_dock_band: 12.0,
+            seam_band: 28.0,
+            column_edge_band: 28.0,
+            new_dock_band: 28.0,
             icon_size: 20.0,
             iconic_width: 36.0,
             iconic_max_width: 240.0,
@@ -210,6 +242,38 @@ impl DockStyle {
         }
     }
 
+    /// The sides [`Self::drop_edges`] gives in this profile: all four with
+    /// [`Self::side_edge_zones`].
+    pub(super) fn drop_sides(&self) -> super::Sides {
+        if self.side_edge_zones { super::Sides::ALL } else { self.drop_edges }
+    }
+
+    /// The sides of a frame or floating group that takes no tabs (a canvas) whose body takes a
+    /// drop: none in the docking profile ([`Self::new_dock_zones`] without
+    /// [`Self::side_edge_zones`]), where only the bands along borders dock beside it, else
+    /// [`Self::drop_sides`].
+    pub(super) fn canvas_sides(&self) -> super::Sides {
+        if self.side_edge_zones || !self.new_dock_zones { self.drop_sides() } else { super::Sides::NONE }
+    }
+
+    /// The outer edges that take a drop: all four with [`Self::side_edge_zones`], else the top
+    /// and bottom of [`Self::drop_edges`].
+    pub(super) fn outer_edges(&self) -> super::Sides {
+        let sides = self.drop_sides();
+        if self.side_edge_zones { sides } else { super::Sides { left: false, right: false, ..sides } }
+    }
+
+    /// How a group's body divides into drop zones: [`crate::docking::SIDE_EDGE_ZONE_DEPTH`] deep
+    /// with [`Self::side_edge_zones`], else [`Self::side_zone_fraction`] of it, with
+    /// [`Self::drop_line_width`] previews. Pass it to [`crate::docking::resolve_drop_by`].
+    pub fn zone_rule(&self) -> super::ZoneRule {
+        if self.side_edge_zones {
+            super::ZoneRule::Depth(super::SIDE_EDGE_ZONE_DEPTH)
+        } else {
+            super::ZoneRule::Fraction { fraction: self.side_zone_fraction, line: self.drop_line_width }
+        }
+    }
+
     pub(super) fn valid(&self) -> bool {
         [
             self.tab_height,
@@ -222,9 +286,11 @@ impl DockStyle {
             self.floating_stroke.width,
             self.title_height,
             self.edge_band,
-            self.zone_depth,
+            self.side_zone_fraction,
+            self.drop_line_width,
             self.column_bar_height,
             self.seam_band,
+            self.column_edge_band,
             self.new_dock_band,
             self.icon_size,
             self.iconic_width,
@@ -236,6 +302,8 @@ impl DockStyle {
             && self.iconic_width <= self.iconic_max_width
             && self.tab_height > 0.0
             && self.font.size > 0.0
+            && self.drop_line_width > 0.0
+            && self.side_zone_fraction <= 0.5
     }
 }
 
@@ -311,9 +379,9 @@ const FLOAT_INSET: f32 = 24.0;
 #[cfg_attr(not(feature = "serde"), allow(dead_code))]
 pub(super) const DEFAULT_FLOAT: Vec2 = Vec2::new(260.0, 320.0);
 
-/// Where a docking command floats a panel, group or column when it gives no rect (see
-/// `DockCommand::to_actions`, feature `serde`). [`DockArea`] records one each frame; read it
-/// with [`float_space`].
+/// Where a docking command floats a panel, group or column when it gives no rect, and how the
+/// area draws its outer edge (see `DockCommand::to_actions`, feature `serde`). [`DockArea`]
+/// records one each frame; read it with [`float_space`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct FloatSpace<P> {
     /// The rect the area drew in. A floated unit goes inside it, 24 points from its top-left
@@ -326,13 +394,23 @@ pub struct FloatSpace<P> {
     /// The height each panel's content used when it was last drawn, which fits a floated group
     /// to its content; `None` for content that filled its body.
     pub(super) contents: Vec<(P, Option<f32>)>,
+    /// The area draws with [`DockStyle::side_edge_zones`]: an outer edge drop wraps the part
+    /// between the docks, never only the canvas column.
+    pub(super) side_edge_zones: bool,
 }
 
 impl<P: PartialEq> FloatSpace<P> {
     /// An area with no recorded sizes: commands float a panel at 260x320, and a group or
     /// column at its dock column's width (else 260) by 320.
     pub fn new(area: Rect) -> Self {
-        Self { area, panels: Vec::new(), groups: Vec::new(), columns: Vec::new(), contents: Vec::new() }
+        Self { area, panels: Vec::new(), groups: Vec::new(), columns: Vec::new(), contents: Vec::new(), side_edge_zones: false }
+    }
+
+    /// For an area drawn with [`DockStyle::side_edge_zones`] when the area has not drawn yet
+    /// (a headless run): an outer edge command then wraps what that profile's edge band wraps.
+    pub fn with_side_edge_zones(mut self, on: bool) -> Self {
+        self.side_edge_zones = on;
+        self
     }
 
     /// Adds the size a command floats `panel` at alone when the area has not drawn it, such as
@@ -444,51 +522,16 @@ fn cancel_drag_if_replaced<P: Clone + Eq + Hash + Debug + Send + Sync + 'static>
     }) else {
         return;
     };
-    let now = shape(layout);
-    if now == shape(&last.layout) {
+    let now = layout.shape();
+    if now == last.layout.shape() {
         return;
     }
     let mut applied = last.layout;
     for action in last.actions {
         let _ = applied.apply(action);
     }
-    if now != shape(&applied) {
+    if now != applied.shape() {
         cancel_drag::<P>(ctx, area);
-    }
-}
-
-/// `layout` without its sizes and rectangles: which panels are where, and their state.
-fn shape<P: Clone>(layout: &Layout<P>) -> Layout<P> {
-    use super::{Column, Floating, Group, Node, StackEntry};
-    use crate::layout::SplitSize;
-    fn node<P: Clone>(n: &Node<P>) -> Node<P> {
-        match n {
-            Node::Split { axis, first, second, .. } => {
-                Node::Split { axis: *axis, size: SplitSize::Ratio(0.5), first: Box::new(node(first)), second: Box::new(node(second)) }
-            }
-            Node::Tabs { panels, active } => Node::Tabs { panels: panels.clone(), active: *active },
-            Node::Stack { entries } => Node::Stack { entries: entries.iter().map(|e| StackEntry { height: None, ..e.clone() }).collect() },
-            Node::Dock { side, columns } => Node::Dock {
-                side: *side,
-                columns: columns
-                    .iter()
-                    .map(|c| Column {
-                        groups: c.groups.iter().map(|g| Group { height: None, ..g.clone() }).collect(),
-                        width: 0.0,
-                        iconic: c.iconic,
-                        iconic_width: None,
-                    })
-                    .collect(),
-            },
-        }
-    }
-    Layout {
-        root: layout.root.as_ref().map(node),
-        floating: layout
-            .floating
-            .iter()
-            .map(|w| Floating { root: node(&w.root), rect: [0.0; 4], native: None, monitor: None, monitor_size: None, ..w.clone() })
-            .collect(),
     }
 }
 
@@ -748,6 +791,41 @@ pub fn route_app_drag(ctx: &Context, area_id: Id) {
     let _ = (ctx, area_id);
 }
 
+/// The native window that has the keyboard and a focused text field in its last pass (feature
+/// `native-windows`; elsewhere `None`). Not a window drawn under [`DockArea::input_blocked`].
+///
+/// On macOS the menu bar takes key equivalents such as ⌘C and ⌘V before the key window sees
+/// them, and an app's menu glue reports them in the main window's input. While this is `Some`,
+/// the dock area moves the keys a text field acts on (⌘C, ⌘X, ⌘V, ⌘A, ⌘Z and ⇧⌘Z, ⌘ with the
+/// arrows, ⌘Backspace and ⌘Delete, and `Copy`, `Cut` and `Paste` events) from the main window's
+/// input to that window's, as [`send_keys`] does; the app's other command keys stay with the
+/// main window. A menu that runs commands itself instead of reporting keys can send the text
+/// keys to this window with [`send_keys`]. An app whose own `raw_input_hook` turns the main
+/// window's ⌘V into `ViewportCommand::RequestPaste` for its text fields skips that while this
+/// is `Some`, so the field's window pastes instead.
+pub fn typing_window(ctx: &Context) -> Option<egui::ViewportId> {
+    #[cfg(feature = "native-windows")]
+    return super::render::typing_window(ctx);
+    #[cfg(not(feature = "native-windows"))]
+    {
+        let _ = ctx;
+        None
+    }
+}
+
+/// Give `events` to the native window `viewport` at the start of its next input, and repaint
+/// it (feature `native-windows`; elsewhere it does nothing). A text field copies and pastes on
+/// egui's `Copy`, `Cut` and `Paste` events, not on key presses, so ⌘C and ⌘X presses arrive as
+/// `Copy` and `Cut`, and ⌘V asks the window for the clipboard text
+/// (`ViewportCommand::RequestPaste`), which arrives as `Paste`. Other events arrive as they are.
+/// See [`typing_window`].
+pub fn send_keys(ctx: &Context, viewport: egui::ViewportId, events: Vec<egui::Event>) {
+    #[cfg(feature = "native-windows")]
+    super::render::send_keys(ctx, viewport, events);
+    #[cfg(not(feature = "native-windows"))]
+    let _ = (ctx, viewport, events);
+}
+
 /// One mutable application adapter owns bodies, menus, shaped text and per-panel policy,
 /// avoiding competing mutable closures. Logical labels are used for tab accessibility.
 /// [`DockArea::show_content`] reads every policy from here; the closures passed to the older
@@ -807,6 +885,11 @@ pub trait DockContent<P> {
     fn window_kind(&self, _panel: &P) -> WindowKind {
         WindowKind::Palette
     }
+    /// A native floating window drew its panel bodies (feature `native-windows`): called once
+    /// per pass of the window, after its last body, with the window's `ui`. An app that
+    /// publishes its own IME descriptor, outside [`crate::ime::Composer`], publishes it here for
+    /// the window. Windows drawn in the main window's pass get no call.
+    fn window_drawn(&mut self, _ui: &mut Ui) {}
     /// Host-owned drop resolution for targets the renderer cannot know about. Returning
     /// feedback consumes the gesture, including no-op targets; the renderer then emits no move.
     fn resolve_drag(&mut self, _ctx: &Context, _style: &DockStyle, _request: &DropRequest<'_, P>) -> Option<DropFeedback> {
@@ -828,7 +911,24 @@ pub trait DockContent<P> {
         0.0
     }
     /// Draw the group header into `ui.max_rect()`, sized by [`Self::group_header_width`].
+    /// The header's widgets take their own input, so a drag on them moves nothing. For a widget
+    /// that should drag (a ≡ button, say), call [`begin_drag`] with the id given to
+    /// [`DockArea::new`], `active` and the widget's rect when its response reports
+    /// `drag_started()`; the panel then moves as its tab would.
     fn group_header(&mut self, _ui: &mut Ui, _panels: &[P], _active: &P, _floating: bool) {}
+    /// Width the group's extra tabs want: the host's own tabs, drawn right after the group's
+    /// panel tabs (and their "…" button), before the drag bar. They fit with the panel tabs:
+    /// both shrink widest first to [`DockStyle::min_tab_width`] (the extra tabs as one tab); in a
+    /// row narrower still, the panel tabs overflow and the extra tabs keep that width. Zero draws
+    /// none.
+    fn group_extra_tabs_width(&self, _panels: &[P], _active: &P, _floating: bool) -> f32 {
+        0.0
+    }
+    /// Draw the extra tabs into `ui.max_rect()`, which can be narrower than
+    /// [`Self::group_extra_tabs_width`] asked for; the host fits its tabs into it, with an
+    /// overflow of its own. Their widgets take their own input as the header's do, and a press
+    /// among them focuses the shown panel. A drop on them adds the panel after the last panel tab.
+    fn group_extra_tabs(&mut self, _ui: &mut Ui, _panels: &[P], _active: &P, _floating: bool) {}
 }
 
 /// Host-owned drop resolution request, see [`DockContent::resolve_drag`].
@@ -895,6 +995,9 @@ impl<P, C: DockContent<P> + ?Sized> DockContent<P> for Overrides<'_, P, C> {
     fn window_kind(&self, panel: &P) -> WindowKind {
         self.inner.window_kind(panel)
     }
+    fn window_drawn(&mut self, ui: &mut Ui) {
+        self.inner.window_drawn(ui);
+    }
     fn resolve_drag(&mut self, ctx: &Context, style: &DockStyle, request: &DropRequest<'_, P>) -> Option<DropFeedback> {
         self.inner.resolve_drag(ctx, style, request)
     }
@@ -912,6 +1015,12 @@ impl<P, C: DockContent<P> + ?Sized> DockContent<P> for Overrides<'_, P, C> {
     }
     fn group_header(&mut self, ui: &mut Ui, panels: &[P], active: &P, floating: bool) {
         self.inner.group_header(ui, panels, active, floating);
+    }
+    fn group_extra_tabs_width(&self, panels: &[P], active: &P, floating: bool) -> f32 {
+        self.inner.group_extra_tabs_width(panels, active, floating)
+    }
+    fn group_extra_tabs(&mut self, ui: &mut Ui, panels: &[P], active: &P, floating: bool) {
+        self.inner.group_extra_tabs(ui, panels, active, floating);
     }
 }
 
@@ -931,6 +1040,8 @@ pub struct DockArea<'a, P = ()> {
     native_windows: Option<bool>,
     #[cfg(feature = "native-windows")]
     input_hook: Option<super::render::InputHook>,
+    #[cfg(feature = "native-windows")]
+    window_system: super::render::WindowSystem,
 }
 
 impl<'a, P: Clone + Eq + Hash + Debug + Send + Sync + 'static> DockArea<'a, P> {
@@ -949,6 +1060,8 @@ impl<'a, P: Clone + Eq + Hash + Debug + Send + Sync + 'static> DockArea<'a, P> {
             native_windows: None,
             #[cfg(feature = "native-windows")]
             input_hook: None,
+            #[cfg(feature = "native-windows")]
+            window_system: Default::default(),
         }
     }
 
@@ -956,6 +1069,8 @@ impl<'a, P: Clone + Eq + Hash + Debug + Send + Sync + 'static> DockArea<'a, P> {
     /// one it is on, and a restored layout puts each window back on its monitor, or on the
     /// main window's when that monitor is gone. egui 0.36 reports no monitors; without a list
     /// windows store the monitor size egui reports and restore onto the main window's monitor.
+    /// eframe 0.36 keeps winit's event loop, and with it `available_monitors`, to itself, so an
+    /// eframe application builds the list from the platform's own display API.
     pub fn monitors(mut self, monitors: Vec<Monitor>) -> Self {
         self.monitors = monitors;
         self
@@ -1001,6 +1116,13 @@ impl<'a, P: Clone + Eq + Hash + Debug + Send + Sync + 'static> DockArea<'a, P> {
     #[cfg(feature = "native-windows")]
     pub fn native_input_hook(mut self, hook: impl FnMut(&Context, &mut egui::RawInput) + Send + 'static) -> Self {
         self.input_hook = Some(Box::new(hook));
+        self
+    }
+
+    /// A stand-in for the window system that moves native windows and tells the cursor.
+    #[cfg(all(feature = "native-windows", any(test, feature = "testing")))]
+    pub(in crate::docking) fn window_system(mut self, window_system: super::render::WindowSystem) -> Self {
+        self.window_system = window_system;
         self
     }
 
@@ -1145,7 +1267,7 @@ impl<'a, P: Clone + Eq + Hash + Debug + Send + Sync + 'static> DockArea<'a, P> {
         ui.ctx().data_mut(|d| d.insert_temp(blocked_key, self.input_blocked));
         cancel_drag_if_replaced(ui.ctx(), self.id, layout);
         release_moved_tab_focus(ui.ctx(), self.id, layout);
-        let (view, frame) = super::render::view(layout, self.maximized.as_ref(), self.hide, &*content);
+        let (view, frame) = super::render::view(layout, self.maximized.as_ref(), self.hide, &*content, !style.side_edge_zones);
         let places = layout.places();
         // A panel keeps the content height it last drew while hidden or minimized.
         let contents: Vec<(P, Option<f32>)> = float_space::<P>(ui.ctx(), self.id)
@@ -1164,11 +1286,13 @@ impl<'a, P: Clone + Eq + Hash + Debug + Send + Sync + 'static> DockArea<'a, P> {
             float_bounds: self.float_bounds.map_or(ui.ctx().content_rect(), |bounds| bounds.intersect(ui.ctx().content_rect())),
             targets: Vec::new(),
             dock_targets: Vec::new(),
+            dock_groups: Vec::new(),
+            column_scroll: HashMap::new(),
             owned_interactions: Vec::new(),
             output: DockOutput::default(),
             frame,
             iconic: super::render::Iconic::new(self.auto_collapse),
-            float_space: FloatSpace { contents, ..FloatSpace::new(rect) },
+            float_space: FloatSpace { contents, side_edge_zones: style.side_edge_zones, ..FloatSpace::new(rect) },
             places,
             contents: content_index,
             dividers: Vec::new(),
@@ -1178,6 +1302,8 @@ impl<'a, P: Clone + Eq + Hash + Debug + Send + Sync + 'static> DockArea<'a, P> {
             native_windows: self.native_windows,
             #[cfg(feature = "native-windows")]
             cross: Default::default(),
+            #[cfg(feature = "native-windows")]
+            window_system: self.window_system,
         };
         if let Some(root) = &view.root {
             renderer.node(ui, root, rect, &mut Vec::new(), (root, rect));

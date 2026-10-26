@@ -103,6 +103,9 @@ fn widening_an_iconic_column_shows_labels() {
 }
 
 #[test]
+/// An icon click activates its panel and opens a canvas-side flyout; another
+/// icon switches it, and the same icon closes it even with auto-collapse off. Escape
+/// and outside presses close it only with auto-collapse on; a programmatic raise opens it.
 fn icon_click_opens_a_flyout_on_the_canvas_side_and_auto_collapse_closes_it() {
     let mut d = DockDriver::new(docked(&[&[1, 2], &[3]], true), Content);
     let icon = hit(&d, Hit::Icon(2)).center();
@@ -160,18 +163,20 @@ fn icon_click_opens_a_flyout_on_the_canvas_side_and_auto_collapse_closes_it() {
 }
 
 #[test]
+/// Choosing Auto-Collapse Iconic Panels from the iconic column's menu emits a
+/// `DockEvent::ToggleAutoCollapse` event rather than mutating the layout directly.
 fn auto_collapse_toggle_is_a_column_menu_event() {
     use egui_kittest::{Harness, kittest::Queryable};
     let layout = docked(&[&[1, 2]], true);
     let mut h = Harness::builder().with_size(vec2(800.0, 600.0)).build_ui_state(
         |ui, events: &mut Vec<DockEvent<u32>>| {
-            let out = DockArea::new(egui::Id::new("menu")).show_content(ui, &layout, &DockStyle::from_ui(ui), &mut Content);
+            let out = DockArea::new(egui::Id::unique("menu")).show_content(ui, &layout, &DockStyle::from_ui(ui), &mut Content);
             events.extend(out.events);
         },
         Vec::new(),
     );
     h.run_steps(2);
-    let bar = h.ctx.read_response(egui::Id::new("menu").with(("column-bar", Some(&1u32)))).unwrap().rect.center();
+    let bar = h.ctx.read_response(egui::Id::unique("menu").with(("column-bar", Some(&1u32)))).unwrap().rect.center();
     h.input_mut().events.extend([
         egui::Event::PointerMoved(bar),
         egui::Event::PointerButton { pos: bar, button: egui::PointerButton::Secondary, pressed: true, modifiers: egui::Modifiers::NONE },
@@ -266,6 +271,27 @@ fn group_dropped_on_an_iconic_column_joins_as_an_icon_group() {
     );
     assert_eq!(groups(&d.layout), vec![vec![1], vec![5, 6], vec![2]]);
     assert!(first_column(&d.layout).iconic);
+}
+
+/// A group dropped on the window edge beside an iconic column at that edge docks in a new column
+/// there: the preview is the edge line alone, without the column's outline.
+#[test]
+fn an_edge_drop_next_to_an_iconic_column_highlights_only_the_edge() {
+    let mut layout = docked(&[&[1], &[2]], true);
+    layout.floating.push(Floating::single(vec![5, 6], 0, [300.0, 200.0, 240.0, 200.0]));
+    let mut d = DockDriver::new(layout, Content);
+    let bar = hit(&d, Hit::DragBar(5)).center();
+    let target = pos2(2.0, 300.0);
+    d.hold(bar, target);
+    let column = Rect::from_min_max(pos2(0.0, 14.0), pos2(36.0, 600.0));
+    assert!(d.filled(Rect::from_x_y_ranges(0.0..=4.0, 0.0..=600.0)), "the edge line");
+    assert!(!d.outlined(column.shrink(1.0)), "the iconic column is not outlined");
+    d.release(target);
+    let Some(Node::Split { first, .. }) = &d.layout.root else { panic!("{:?}", d.layout.root) };
+    let Node::Dock { columns, .. } = first.as_ref() else { panic!("{first:?}") };
+    let panels: Vec<Vec<u32>> = columns.iter().map(|c| c.groups.iter().flat_map(|g| g.panels.clone()).collect()).collect();
+    assert_eq!(panels, vec![vec![5, 6], vec![1, 2]]);
+    assert!(!columns[0].iconic && columns[1].iconic);
 }
 
 /// Every kind of gesture source has a rect, and dragging from it does something.

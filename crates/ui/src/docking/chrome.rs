@@ -32,6 +32,8 @@ pub struct ChromeStyle {
     pub text: Color32,
     pub weak_text: Color32,
     pub accent: Color32,
+    /// Fill of a selected or hovered control, such as an icon rail's open item.
+    pub active_background: Color32,
     pub font: FontId,
     /// Mirror the title bar: buttons at the left, the title at the right.
     pub right_to_left: bool,
@@ -39,7 +41,23 @@ pub struct ChromeStyle {
 
 impl ChromeStyle {
     pub fn from_ui(ui: &Ui) -> Self {
-        Self::from_dock(&DockStyle::from_ui(ui))
+        Self::from_visuals(ui.visuals())
+    }
+
+    /// The colors [`Self::from_dock`] takes from [`DockStyle::from_visuals`], without building
+    /// the dock style's labels.
+    pub fn from_visuals(visuals: &egui::Visuals) -> Self {
+        Self {
+            background: visuals.window_fill,
+            stroke: visuals.window_stroke,
+            title_background: visuals.extreme_bg_color,
+            text: visuals.text_color(),
+            weak_text: visuals.weak_text_color(),
+            accent: visuals.selection.stroke.color,
+            active_background: visuals.widgets.active.bg_fill,
+            font: FontId::proportional(12.0),
+            right_to_left: false,
+        }
     }
 
     pub fn from_dock(style: &DockStyle) -> Self {
@@ -50,6 +68,7 @@ impl ChromeStyle {
             text: style.text,
             weak_text: style.inactive_text,
             accent: style.accent,
+            active_background: style.active_background,
             font: style.font.clone(),
             right_to_left: style.right_to_left,
         }
@@ -98,6 +117,7 @@ pub struct FloatingFrame<'a> {
     limits: PanelLimits,
     resizable: bool,
     resize_label: &'a str,
+    opacity: f32,
 }
 
 /// What a [`FloatingFrame`] did this frame.
@@ -117,7 +137,7 @@ pub struct FrameResponse<R> {
 
 impl<'a> FloatingFrame<'a> {
     pub fn new(id: Id, rect: Rect) -> Self {
-        Self { id, rect, bounds: None, limits: PanelLimits::default(), resizable: true, resize_label: "Resize window" }
+        Self { id, rect, bounds: None, limits: PanelLimits::default(), resizable: true, resize_label: "Resize window", opacity: 1.0 }
     }
 
     /// The frame stays inside `bounds`; the default is the viewport's content rect.
@@ -144,6 +164,12 @@ impl<'a> FloatingFrame<'a> {
         self
     }
 
+    /// Opacity of everything drawn in the frame, contents included (default 1.0).
+    pub fn opacity(mut self, opacity: f32) -> Self {
+        self.opacity = opacity;
+        self
+    }
+
     pub fn layer(id: Id) -> LayerId {
         LayerId::new(Order::Middle, id)
     }
@@ -161,6 +187,7 @@ impl<'a> FloatingFrame<'a> {
             .movable(false)
             .constrain_to(bounds);
         let shown = area.show(ctx, |ui| {
+            ui.multiply_opacity(self.opacity);
             // Drawn at `rect` itself, also in egui's first (sizing) pass of a new area.
             ui.set_min_size(rect.size());
             ui.allocate_rect(rect, Sense::hover());
@@ -175,6 +202,15 @@ impl<'a> FloatingFrame<'a> {
         shown.inner
     }
 
+    /// Draw the resize handles around `rect` and return `(resized, started, responses)`.
+    ///
+    /// `resized` is set only for an enabled, uncancelled handle whose clamped next rect differs
+    /// from the current one. `started` names the handle whose drag began, which can remain set after
+    /// Escape or focus loss cancels that drag. Keyboard arrow steps move an edge by 8 pt; pointer
+    /// drags derive the next rect from the cursor relative to the press origin. Limits clamp the
+    /// proposal. Stored pointer anchors are removed on cancellation or once the primary button is
+    /// released. Handles are accessibility buttons; the diagonal one is painted while hovered,
+    /// dragged or focused.
     fn handles(&self, ui: &mut Ui, rect: Rect, bounds: Rect, style: &ChromeStyle) -> (Option<Rect>, Option<Id>, Vec<Response>) {
         let mut resized = None;
         let mut started = None;
@@ -195,7 +231,7 @@ impl<'a> FloatingFrame<'a> {
                 egui::CursorIcon::ResizeNeSw
             };
             let response = ui.interact(handle, self.id.with(name), Sense::drag()).on_hover_cursor(cursor);
-            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), self.resize_label));
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), self.resize_label));
             let anchor_id = response.id.with("pointer-anchor");
             crate::layout::drag_focus(ui, &response);
             if response.drag_started()
@@ -254,7 +290,9 @@ impl<'a> FloatingFrame<'a> {
 }
 
 /// A drop preview: a 2 pt accent outline inside `rect`, filled with 15% accent when `filled`.
-/// Docking and the pane host draw every destination and drag ghost with it.
+/// Docking draws its drag ghosts with it, and with
+/// [`crate::docking::DockStyle::side_edge_zones`] the region a drop takes; the pane host draws
+/// every destination with it.
 pub fn drop_preview(painter: &egui::Painter, rect: Rect, accent: Color32, filled: bool) {
     let fill = if filled { accent.gamma_multiply(0.15) } else { Color32::TRANSPARENT };
     painter.rect(rect, 0.0, fill, Stroke::new(2.0, accent), StrokeKind::Inside);
@@ -343,6 +381,15 @@ impl<'a> TitleBar<'a> {
         self
     }
 
+    /// Draw the title bar into `rect` and return its responses.
+    ///
+    /// `close_at` rects are in logical points, already mirrored in a right-to-left layout; without it
+    /// the × is a square the bar's height centered 10 pt in from the trailing edge. Menu and close
+    /// buttons reserve space on the trailing side, the draggable bar excludes them, and a title is
+    /// truncated to the bar's remaining width. The bar senses clicks and drags, while double-click
+    /// behavior (for example minimizing or closing) is the caller's. A right-to-left style mirrors
+    /// the layout; `move_label` remains the accessible name of the drag surface. The bar's own id
+    /// is used, with `"menu"` and `"close"` child ids for the buttons.
     pub fn show(self, ui: &mut Ui, rect: Rect, style: &ChromeStyle) -> TitleResponse {
         let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
         painter.rect_filled(rect, 0.0, style.title_background);
@@ -366,7 +413,7 @@ impl<'a> TitleBar<'a> {
         let (close_rect, menu_rect) = (close_rect.map(mirror), menu_rect.map(mirror));
         let bar = ui.interact(bar_rect, self.id, Sense::click_and_drag());
         let bar = if self.movable { bar.on_hover_cursor(egui::CursorIcon::Grab) } else { bar };
-        bar.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), self.move_label));
+        bar.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), self.move_label));
         if let Some(title) = self.title {
             let galley = truncated(ui, title, (bar_rect.width() - 12.0).max(0.0), style.font.clone());
             let x = if style.right_to_left { bar_rect.right() - 6.0 - galley.size().x } else { bar_rect.left() + 6.0 };
@@ -377,7 +424,7 @@ impl<'a> TitleBar<'a> {
         }
         let button = |ui: &mut Ui, rect: Rect, name: &str, label: &str| {
             let response = ui.interact(rect, self.id.with(name), Sense::click());
-            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label));
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
             let color = if response.hovered() || response.has_focus() { style.text } else { style.weak_text };
             (response, Stroke::new(1.2, color))
         };
