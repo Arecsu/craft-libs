@@ -106,9 +106,7 @@ let laid_out = craft_menu::layout(&menu_bar, Target::current(), &LayoutOptions::
 egui::Panel::top("menu-bar").show(ui, |ui| {
     let gate = Gate { modal: dialog_open, recording_shortcut, text_editing: ui.ctx().text_edit_focused() };
     for command in MenuBarUi::new(&laid_out).gate(gate).label(&tr).show(ui) {
-        if !craft_quit::on_menu_event(ui.ctx(), &command.id) {
-            app.run(&command);
-        }
+        app.run(&command);
     }
 });
 ```
@@ -129,9 +127,9 @@ egui::Panel::top("menu-bar").show(ui, |ui| {
   keyboard. Each menu level assigns them from the labels as shown, so translated: unique within
   the level, the first unused letter, word starts first; `.mnemonics(&[("View", 'W'),
   ("file.open", 'P')])` names preferred letters by title as shown or by command id. A label
-  without an ASCII letter or digit shows its English label's letter after it, "文件(F)", when
-  `.english(&hook)` returns that English label for the `Labeled::Command` or `Labeled::Title`;
-  without one it has no mnemonic. While the bar has the keyboard the app's shortcuts wait, as
+  without an ASCII letter or digit shows its English label's letter after it, "文件(F)", before a
+  trailing ellipsis ("開く(O)…"), when `.english(&hook)` returns that English label for the
+  `Labeled::Command` or `Labeled::Title`; without one it has no mnemonic. While the bar has the keyboard the app's shortcuts wait, as
   for an open menu (`craft_menu::bar::is_focused(ctx)`); call
   `craft_menu::bar::leave_for_shortcut(ctx)` before them so that a command shortcut (Ctrl+S,
   F7) leaves the bar and runs. While a dialog is open or a shortcut is being recorded (`Gate`),
@@ -147,10 +145,13 @@ egui::Panel::top("menu-bar").show(ui, |ui| {
   choose).
 - **Narrow windows:** the menus that don't fit move into a trailing `⋯` menu; when not even the
   first fits, one `Menu` title holds them all. `.label(&tr)` translates `⋯`, `Menu` and the
-  scroll arrows' names, with the same hook as `LayoutOptions::label`.
+  scroll arrows' names, with the same hook as `LayoutOptions::label`. The bar fills its row;
+  `.shrink_to_fit(max_width)` makes it take only the width its titles need, up to `max_width`,
+  so other controls can share the row, and the menus past that overflow.
 - **Quit:** without an app Quit item, the Windows and Linux layouts add `Builtin::Quit`
-  (`craft_quit::QUIT_MENU_ID`). The bar returns it like any other command; pass it to
-  `craft_quit::on_menu_event`, which asks the window to close so the unsaved-changes check runs.
+  (`craft_quit::QUIT_MENU_ID`). The bar runs it itself through `craft_quit::on_menu_event`,
+  which asks the window to close so the unsaved-changes check runs, and doesn't return it; the
+  same goes for `Builtin::Minimize`.
 - **Accessibility:** AccessKit sees a menu bar of menu items, the open menus, check and radio
   items with their state, disabled items, and each item's shortcut and mnemonic (`access_key`).
 - **Style:** `BarStyle::from_style(ui.style())` by default; `.style(..)` sets title padding and
@@ -186,7 +187,11 @@ so the app's unsaved-changes prompt runs). Each menu event wakes egui, so a chos
 once rather than with the next input event.
 
 The backend calls AppKit's Window and Help menu hooks for the menus with `MenuRole::Window` and
-`MenuRole::Help`; it never looks at titles. Services is AppKit's own submenu.
+`MenuRole::Help`; it never looks at titles. Services is AppKit's own submenu. AppKit's Window
+menu lists the app's windows after the menu's own items. An app that keeps its documents in one
+window and lists them in the Window menu itself (`MenuBar::documents`) would see each twice, so it
+installs with
+`mac::install_with(ctx, &bar, MacOptions::default().window_list(false))`.
 
 Only shortcuts with ⌘ or ⌃ become key equivalents. The others (`B`, `⇧B`, `⌥B`, a bare `F5`) are
 tool keys the app handles itself; as key equivalents AppKit would take them from text fields.
