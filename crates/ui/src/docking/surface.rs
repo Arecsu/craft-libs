@@ -911,6 +911,19 @@ pub trait DockContent<P> {
     /// [`DockArea::new`], `active` and the widget's rect when its response reports
     /// `drag_started()`; the panel then moves as its tab would.
     fn group_header(&mut self, _ui: &mut Ui, _panels: &[P], _active: &P, _floating: bool) {}
+    /// Width the group's extra tabs want: the host's own tabs, drawn right after the group's
+    /// panel tabs (and their "…" button), before the drag bar. They fit with the panel tabs:
+    /// both shrink widest first to [`DockStyle::min_tab_width`] (the extra tabs as one tab); in a
+    /// row narrower still, the panel tabs overflow and the extra tabs keep that width. Zero draws
+    /// none.
+    fn group_extra_tabs_width(&self, _panels: &[P], _active: &P, _floating: bool) -> f32 {
+        0.0
+    }
+    /// Draw the extra tabs into `ui.max_rect()`, which can be narrower than
+    /// [`Self::group_extra_tabs_width`] asked for; the host fits its tabs into it, with an
+    /// overflow of its own. Their widgets take their own input as the header's do, and a press
+    /// among them focuses the shown panel. A drop on them adds the panel after the last panel tab.
+    fn group_extra_tabs(&mut self, _ui: &mut Ui, _panels: &[P], _active: &P, _floating: bool) {}
 }
 
 /// Host-owned drop resolution request, see [`DockContent::resolve_drag`].
@@ -994,6 +1007,12 @@ impl<P, C: DockContent<P> + ?Sized> DockContent<P> for Overrides<'_, P, C> {
     }
     fn group_header(&mut self, ui: &mut Ui, panels: &[P], active: &P, floating: bool) {
         self.inner.group_header(ui, panels, active, floating);
+    }
+    fn group_extra_tabs_width(&self, panels: &[P], active: &P, floating: bool) -> f32 {
+        self.inner.group_extra_tabs_width(panels, active, floating)
+    }
+    fn group_extra_tabs(&mut self, ui: &mut Ui, panels: &[P], active: &P, floating: bool) {
+        self.inner.group_extra_tabs(ui, panels, active, floating);
     }
 }
 
