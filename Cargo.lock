@@ -780,6 +780,50 @@ name = "craft-docpath"
 version = "0.1.0"
 
 [[package]]
+name = "craft-font-catalog"
+version = "0.1.0"
+dependencies = [
+ "fontique",
+ "skrifa 0.47.0",
+ "thiserror 2.0.21",
+ "windows-registry",
+ "write-fonts 0.54.1",
+]
+
+[[package]]
+name = "craft-font-manager"
+version = "0.1.0"
+dependencies = [
+ "craft-font-catalog",
+ "craft-font-store",
+ "craft-i18n",
+ "craft-ui",
+ "egui",
+ "egui_kittest",
+ "egui_system_font_provider",
+ "epaint_default_fonts",
+ "image",
+ "log",
+ "serde",
+]
+
+[[package]]
+name = "craft-font-store"
+version = "0.1.0"
+dependencies = [
+ "craft-atomic",
+ "craft-font-catalog",
+ "flate2",
+ "serde",
+ "serde_json",
+ "sha2",
+ "skrifa 0.47.0",
+ "thiserror 2.0.21",
+ "ureq",
+ "write-fonts 0.54.1",
+]
+
+[[package]]
 name = "craft-fonts-build"
 version = "0.1.0"
 dependencies = [
@@ -1409,6 +1453,20 @@ dependencies = [
  "tempfile",
  "toml",
  "wgpu",
+]
+
+[[package]]
+name = "egui_system_font_provider"
+version = "0.37.0"
+source = "git+https://github.com/storytold/egui.git?rev=6d518fc799681571963842f95b55a6b68431b15a#6d518fc799681571963842f95b55a6b68431b15a"
+dependencies = [
+ "epaint",
+ "fontique",
+ "log",
+ "poll-promise",
+ "skrifa 0.44.0",
+ "sys-locale",
+ "unicode-script",
 ]
 
 [[package]]
@@ -3825,6 +3883,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "poll-promise"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f6a58fecbf9da8965bcdb20ce4fd29788d1acee68ddbb64f0ba1b81bccdb7df"
+dependencies = [
+ "document-features",
+ "static_assertions",
+]
+
+[[package]]
 name = "polling"
 version = "3.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5703,6 +5771,7 @@ dependencies = [
  "rustls-platform-verifier",
  "ureq-proto",
  "utf8-zero",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -6083,6 +6152,15 @@ name = "webpki-root-certs"
 version = "1.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b96554aa2acc8ccdb7e1c9a58a7a68dd5d13bccc69cd124cb09406db612a1c9b"
+dependencies = [
+ "rustls-pki-types",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "1.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5f280bbb2b287bc8e7de7e3852945a0ff50d1bbcb5ed42b6c7a568c546df171"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -6612,6 +6690,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55716cfa7e8bcdb90289e07dfac478ccb2e3ec0f9a604fe682c7a03a7984d705"
 dependencies = [
  "font-types 0.12.7",
+ "indexmap",
+ "kurbo 0.13.1",
  "log",
  "read-fonts 0.45.1",
 ]
@@ -7047,10 +7127,5 @@ source = "git+https://github.com/storytold/egui.git?rev=6d518fc799681571963842f9
 
 [[patch.unused]]
 name = "egui_inspection"
-version = "0.37.0"
-source = "git+https://github.com/storytold/egui.git?rev=6d518fc799681571963842f95b55a6b68431b15a#6d518fc799681571963842f95b55a6b68431b15a"
-
-[[patch.unused]]
-name = "egui_system_font_provider"
 version = "0.37.0"
 source = "git+https://github.com/storytold/egui.git?rev=6d518fc799681571963842f95b55a6b68431b15a#6d518fc799681571963842f95b55a6b68431b15a"
