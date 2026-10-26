@@ -73,6 +73,7 @@ fn language_names_and_codes() {
     for name in ["English", "English: USA", "english", "$ID/English: UK", "en", "en_US", "en-GB", "EN", "en-Latn-US"] {
         assert_eq!(Lang::for_language(name), Some(Lang::English), "{name}");
     }
+    assert_eq!(Lang::for_language("en-Cyrl"), None);
     // Each language resolves by name and by code exactly when its feature is on.
     for &(name, code) in LANGUAGES {
         let want = hypher::Lang::from_iso(code).map(|l| Lang::Patterns(PatternLang(l)));
@@ -80,6 +81,7 @@ fn language_names_and_codes() {
         let mut title = name.chars();
         let title: String = title.next().map(|c| c.to_uppercase().chain(title).collect()).unwrap_or_default();
         let upper = code.to_uppercase();
+        let script = pattern_script(code.as_bytes().try_into().unwrap());
         for spelling in [
             name.to_string(),
             format!("{title}: Reform"),
@@ -88,13 +90,15 @@ fn language_names_and_codes() {
             format!("{code}_{upper}"),
             format!("{code}-419"),
             format!("{code}_{upper}_2006"),
-            format!("{code}-Latn"),
-            format!("{code}-Latn-{upper}"),
+            format!("{code}-{script}"),
+            format!("{code}-{script}-{upper}"),
             format!("{code}-1996"),
-            format!("{code}-Latn-1996"),
+            format!("{code}-{script}-1996"),
         ] {
             assert_eq!(Lang::for_language(&spelling), want, "{spelling}");
         }
+        let other = if script == "latn" { "Cyrl" } else { "Latn" };
+        assert_eq!(Lang::for_language(&format!("{code}-{other}-{upper}")), None, "{code}: patterns of another script");
         assert_eq!(Lang::for_language(&format!("{code}_{upper}_x")), None, "{code}: not a locale code");
     }
     for unknown in ["", "[No Language]", "Klingon", "zh_CN", "Chinese: Simplified", "tlh"] {

@@ -639,12 +639,16 @@ impl FontStore {
             entry.files.retain(|f| !removing.contains(&f.name));
             let folder = self.dir.join(&entry.dir);
             let stage = Stage::new(&self.dir)?;
-            let moving: Vec<(PathBuf, PathBuf)> = if entry.files.is_empty() {
+            let mut moving: Vec<(PathBuf, PathBuf)> = removing.iter().map(|f| (folder.join(f), stage.dir.join(f))).collect();
+            let last = entry.files.is_empty();
+            if last {
+                // The licence goes with the last style. Files the store didn't install stay, and
+                // keep the folder.
+                if let Some(licence) = entry.license_file.clone().filter(|n| safe_file_name(n) && !removing.contains(n)) {
+                    moving.push((folder.join(&licence), stage.dir.join(&licence)));
+                }
                 manifest.families.remove(pos);
-                vec![(folder, stage.dir.join("removed"))]
-            } else {
-                removing.iter().map(|f| (folder.join(f), stage.dir.join(f))).collect()
-            };
+            }
             let mut moved = Vec::new();
             for (from, to) in &moving {
                 if from.exists() {
@@ -653,7 +657,12 @@ impl FontStore {
                 }
             }
             match self.write_manifest(&manifest) {
-                Ok(()) => Ok(()),
+                Ok(()) => {
+                    if last {
+                        let _ = std::fs::remove_dir(&folder);
+                    }
+                    Ok(())
+                }
                 Err(e) => {
                     for (from, to) in moved {
                         let _ = std::fs::rename(to, from);
