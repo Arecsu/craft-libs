@@ -694,6 +694,19 @@ mod store {
         assert!(dir.join("outside.ttf").exists());
         assert!(!dir.join("testsans/TestSans-Bold.ttf").exists());
         assert_eq!(store.installed_family(GOOGLE_FONTS, "Test Sans").unwrap().files.len(), 2);
+
+        // The last style takes the licence with it; the unlisted file and its folder stay.
+        let rest: Vec<String> = store.installed_family(GOOGLE_FONTS, "Test Sans").unwrap().files.iter().map(|f| f.name.clone()).collect();
+        store.remove_files(GOOGLE_FONTS, "Test Sans", &rest).unwrap();
+        assert!(store.installed_family(GOOGLE_FONTS, "Test Sans").is_none());
+        let left: Vec<_> = std::fs::read_dir(dir.join("testsans")).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left, ["Unlisted.ttf"]);
+
+        // A folder left empty goes.
+        std::fs::remove_file(dir.join("testsans/Unlisted.ttf")).unwrap();
+        store.install_face(&index, index.find_face("Test Sans", "Bold").unwrap(), &Cancel::new(), &mut none).unwrap();
+        store.remove_files(GOOGLE_FONTS, "Test Sans", &["TestSans-Bold.ttf".into()]).unwrap();
+        assert!(!dir.join("testsans").exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 
