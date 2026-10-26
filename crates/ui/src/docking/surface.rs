@@ -1014,7 +1014,7 @@ pub struct DockArea<'a, P = ()> {
     #[cfg(feature = "native-windows")]
     input_hook: Option<super::render::InputHook>,
     #[cfg(feature = "native-windows")]
-    cursor: super::render::DesktopCursor,
+    window_system: super::render::WindowSystem,
 }
 
 impl<'a, P: Clone + Eq + Hash + Debug + Send + Sync + 'static> DockArea<'a, P> {
@@ -1034,7 +1034,7 @@ impl<'a, P: Clone + Eq + Hash + Debug + Send + Sync + 'static> DockArea<'a, P> {
             #[cfg(feature = "native-windows")]
             input_hook: None,
             #[cfg(feature = "native-windows")]
-            cursor: Default::default(),
+            window_system: Default::default(),
         }
     }
 
@@ -1092,10 +1092,10 @@ impl<'a, P: Clone + Eq + Hash + Debug + Send + Sync + 'static> DockArea<'a, P> {
         self
     }
 
-    /// Where native windows that follow a bar drag go: a stand-in window system's cursor.
+    /// A stand-in for the window system that moves native windows and tells the cursor.
     #[cfg(all(feature = "native-windows", any(test, feature = "testing")))]
-    pub(in crate::docking) fn desktop_cursor(mut self, cursor: super::render::DesktopCursor) -> Self {
-        self.cursor = cursor;
+    pub(in crate::docking) fn window_system(mut self, window_system: super::render::WindowSystem) -> Self {
+        self.window_system = window_system;
         self
     }
 
@@ -1276,7 +1276,7 @@ impl<'a, P: Clone + Eq + Hash + Debug + Send + Sync + 'static> DockArea<'a, P> {
             #[cfg(feature = "native-windows")]
             cross: Default::default(),
             #[cfg(feature = "native-windows")]
-            cursor: self.cursor,
+            window_system: self.window_system,
         };
         if let Some(root) = &view.root {
             renderer.node(ui, root, rect, &mut Vec::new(), (root, rect));
