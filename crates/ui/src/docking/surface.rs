@@ -885,6 +885,11 @@ pub trait DockContent<P> {
     fn window_kind(&self, _panel: &P) -> WindowKind {
         WindowKind::Palette
     }
+    /// A native floating window drew its panel bodies (feature `native-windows`): called once
+    /// per pass of the window, after its last body, with the window's `ui`. An app that
+    /// publishes its own IME descriptor, outside [`crate::ime::Composer`], publishes it here for
+    /// the window. Windows drawn in the main window's pass get no call.
+    fn window_drawn(&mut self, _ui: &mut Ui) {}
     /// Host-owned drop resolution for targets the renderer cannot know about. Returning
     /// feedback consumes the gesture, including no-op targets; the renderer then emits no move.
     fn resolve_drag(&mut self, _ctx: &Context, _style: &DockStyle, _request: &DropRequest<'_, P>) -> Option<DropFeedback> {
@@ -976,6 +981,9 @@ impl<P, C: DockContent<P> + ?Sized> DockContent<P> for Overrides<'_, P, C> {
     }
     fn window_kind(&self, panel: &P) -> WindowKind {
         self.inner.window_kind(panel)
+    }
+    fn window_drawn(&mut self, ui: &mut Ui) {
+        self.inner.window_drawn(ui);
     }
     fn resolve_drag(&mut self, ctx: &Context, style: &DockStyle, request: &DropRequest<'_, P>) -> Option<DropFeedback> {
         self.inner.resolve_drag(ctx, style, request)

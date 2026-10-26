@@ -571,6 +571,15 @@ windows from the first frame. `DockArea::native_windows(bool)` overrides the cho
   `Paste` without the key). The app feeds them to the shortcut handling it runs on the main
   window. A window where any widget has keyboard focus forwards nothing, and an Escape that
   cancels a drag is not forwarded.
+- **Input methods.** egui's IME descriptor (`PlatformOutput::ime`) goes out from the pass of
+  the window whose editor has the keyboard. A `craft_ui::ime::Composer` in a panel body of a
+  native window records its descriptor while the window draws, and the dock area publishes it
+  once per pass, after the window's last body. A body drawn after the editor's cannot clear it
+  (egui-winit turns the IME off in a pass without one, ending the composition). A descriptor
+  written directly in that pass, as a focused `TextEdit` writes one, is kept. An app whose own
+  editor publishes the descriptor does it in `DockContent::window_drawn`, called once per
+  window pass after the last body. Floating windows drawn in the main window (the web,
+  Wayland) are part of its pass, which publishes as it does without docking.
 - **Modal dialogs.** egui's `Modal` blocks input only in the viewport it is shown in. While the
   app shows one, it passes `DockArea::input_blocked(true)`. Each native window is then drawn
   under `DockStyle::blocked_dim` (by default the panel fill at 60 %), and its bar, tabs, body

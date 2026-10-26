@@ -651,7 +651,14 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             let buttons = self.native_bar(ui, window);
             let body = Rect::from_min_max(pos2(full.left(), (full.top() + BAR_HEIGHT).min(full.bottom())), full.max);
             self.cross.pointed = None;
+            if own {
+                crate::ime::window::begin_window(ui.ctx());
+            }
             self.floating_body(ui, window, body, full);
+            if own {
+                self.content.window_drawn(ui);
+                crate::ime::window::finish_window(ui.ctx());
+            }
             if own && !blocked && ui.ctx().text_edit_focused() {
                 let _ = body_input(ui.ctx()).lock().typing_next.insert(viewport);
             }
