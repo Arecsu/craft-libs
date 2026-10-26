@@ -18,6 +18,7 @@ use egui::containers::menu::{MenuConfig, MenuState, SubMenu, SubMenuButton};
 use egui::text::LayoutJob;
 use egui::{Color32, Id, PopupCloseBehavior, Response, TextFormat, TextStyle, Ui, UiKind, UiStackInfo, WidgetText};
 
+use crate::model::Builtin;
 use crate::{Gate, Item, ItemKind, Menu, MenuBar, Node, Target};
 use keys::Keys;
 use nav::Nav;
@@ -106,6 +107,7 @@ pub struct MenuBarUi<'a> {
     english: Option<&'a EnglishHook<'a>>,
     preferred: &'a [(&'a str, char)],
     id: Id,
+    fit: Option<f32>,
 }
 
 impl<'a> MenuBarUi<'a> {
@@ -120,6 +122,7 @@ impl<'a> MenuBarUi<'a> {
             english: None,
             preferred: &[],
             id: Id::unique("craft-menu-bar"),
+            fit: None,
         }
     }
 
@@ -154,7 +157,7 @@ impl<'a> MenuBarUi<'a> {
 
     /// The English label of a row or title, for labels the keyboard can't type a letter of
     /// (Chinese, Japanese, Korean…): such a label shows its English label's mnemonic after it,
-    /// "文件(F)", as Windows menus do. Without this hook (or when it returns `None`) such a label
+    /// "文件(F)", before a trailing ellipsis ("開く(O)…"), as Windows menus do. Without this hook (or when it returns `None`) such a label
     /// has no mnemonic. Not asked on a Mac target, which has no mnemonics.
     pub fn english(mut self, english: &'a dyn Fn(Labeled<'_>) -> Option<String>) -> MenuBarUi<'a> {
         self.english = Some(english);
@@ -170,6 +173,14 @@ impl<'a> MenuBarUi<'a> {
         self
     }
 
+    /// Take only the width the titles need, at most `max_width` (`f32::INFINITY` for no limit)
+    /// and the room the `Ui` has, so that other controls can share the row; past that the menus
+    /// overflow into "⋯". By default the bar fills the row.
+    pub fn shrink_to_fit(mut self, max_width: f32) -> MenuBarUi<'a> {
+        self.fit = Some(max_width);
+        self
+    }
+
     /// The bar's id, where its state lives in egui memory: tells two bars in one window apart.
     pub fn id(mut self, id: Id) -> MenuBarUi<'a> {
         self.id = id;
@@ -178,6 +189,8 @@ impl<'a> MenuBarUi<'a> {
 
     /// Draw the bar and its open menu; returns the commands chosen this frame (at most one),
     /// clicked or run with ↩ or Space. Disabled items, and items the gate forbids, never run.
+    /// [`Builtin::Quit`] (asks the window to close, see [`craft_quit::on_menu_event`]) and
+    /// [`Builtin::Minimize`] run here and are left out.
     pub fn show(self, ui: &mut Ui) -> Vec<CommandRef> {
         let ctx = ui.ctx().clone();
         let style = self.style.clone().unwrap_or_else(|| BarStyle::from_style(ui.style()));
@@ -207,7 +220,13 @@ impl<'a> MenuBarUi<'a> {
             press: self.id.with("press"),
             clicked: None,
         };
-        ui.scope(|ui| {
+        let room = self.fit.map_or(ui.available_width(), |max| max.min(ui.available_width())).max(0.0);
+        let width = match self.fit {
+            // The half point keeps rounding from pushing the last title into "⋯".
+            Some(_) => (self.title_widths(ui, &draw, style.title_padding.x).iter().sum::<f32>() + 0.5).min(room),
+            None => room,
+        };
+        ui.allocate_ui(egui::vec2(width, ui.available_height()), |ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             egui::MenuBar::new().ui(ui, |ui| {
                 ctx.accesskit_node_builder(ui.unique_id(), |n| n.set_role(Role::MenuBar));
@@ -282,7 +301,28 @@ impl<'a> MenuBarUi<'a> {
         if ctx.input(|i| i.pointer.primary_released() || !i.pointer.primary_down()) {
             ctx.data_mut(|d| d.remove::<bool>(draw.press));
         }
-        draw.clicked.into_iter().collect()
+        draw.clicked
+            .into_iter()
+            .filter(|command| match Builtin::of(command) {
+                Some(Builtin::Quit) => !craft_quit::on_menu_event(&ctx, Builtin::Quit.id()),
+                Some(Builtin::Minimize) => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                    false
+                }
+                _ => true,
+            })
+            .collect()
+    }
+
+    /// Each title's width as shown, with any "(F)" it takes, and `pad` on either side.
+    fn title_widths(&self, ui: &Ui, draw: &Draw<'_>, pad: f32) -> Vec<f32> {
+        let font = TextStyle::Button.resolve(ui.style());
+        let names: Vec<(&str, Name<'_>)> = self.bar.menus.iter().map(|m| (m.title.as_str(), Name::App(Labeled::Title(&m.title)))).collect();
+        draw.mnemonics(&names)
+            .0
+            .iter()
+            .map(|t| ui.painter().layout_no_wrap(t.to_owned(), font.clone(), Color32::PLACEHOLDER).size().x + 2.0 * pad)
+            .collect()
     }
 
     /// The titles to draw: every menu when they fit in the row; else the menus that fit with
@@ -293,9 +333,7 @@ impl<'a> MenuBarUi<'a> {
         let pad = 2.0 * ui.spacing().button_padding.x;
         let width = |t: &str| ui.painter().layout_no_wrap(t.to_owned(), font.clone(), Color32::PLACEHOLDER).size().x + pad;
         let room = ui.available_width();
-        // Measured as shown, with any "(F)" a title takes.
-        let names: Vec<(&str, Name<'_>)> = menus.iter().map(|m| (m.title.as_str(), Name::App(Labeled::Title(&m.title)))).collect();
-        let widths: Vec<f32> = draw.mnemonics(&names).0.iter().map(|t| width(t)).collect();
+        let widths = self.title_widths(ui, draw, ui.spacing().button_padding.x);
         if widths.iter().sum::<f32>() <= room {
             return menus.iter().map(Top::Menu).collect();
         }
