@@ -131,7 +131,11 @@ its own command path, so pointer, keyboard and control commands share one path.
 `DockContent<P>` is the app's adapter. It draws each panel body and gives its label, icon,
 permissions, size limits, dock column heights, preferred floating size, panel menu and group header. The group header
 sits at the end of the tab strip; `group_header_width` gets the strip width, so a header that
-draws its own tabs can size them to the room left. An icon is an image (`icon`), or drawn in code by `paint_icon`, which
+draws its own tabs can size them to the room left. Extra tabs (`group_extra_tabs_width` and
+`group_extra_tabs`) sit right after the group's panel tabs, before the drag bar, and fit with
+them: both shrink widest first to `min_tab_width`, the extra tabs as one tab, and in a row
+narrower still the panel tabs overflow while the extra tabs keep that width. The host fits its
+own tabs into the rect it gets. An icon is an image (`icon`), or drawn in code by `paint_icon`, which
 gets a painter, the icon rect and the tint color and returns true when it painted. Panel bodies keep a stable egui id when they move, so widget memory
 survives.
 

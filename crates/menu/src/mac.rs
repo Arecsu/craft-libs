@@ -73,11 +73,40 @@ thread_local! {
 /// or the deprecated `craft_quit::install_app_menu`, never both: called first, that one leaves
 /// this menu without events; called after, it replaces this menu bar with its app menu.
 pub fn install(ctx: &egui::Context, bar: &MenuBar) -> Option<NativeMenu> {
+    install_with(ctx, bar, MacOptions::default())
+}
+
+/// How [`install_with`] sets up the native menus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct MacOptions {
+    /// Make the [`MenuRole::Window`] menu AppKit's Windows menu, which lists the app's windows
+    /// after the menu's own items. On by default. An app that lists its documents itself
+    /// in the Window menu ([`MenuBar::documents`]) and keeps them in one window turns it off: AppKit
+    /// would list that window as well.
+    pub window_list: bool,
+}
+
+impl Default for MacOptions {
+    fn default() -> MacOptions {
+        MacOptions { window_list: true }
+    }
+}
+
+impl MacOptions {
+    pub fn window_list(mut self, on: bool) -> MacOptions {
+        self.window_list = on;
+        self
+    }
+}
+
+/// [`install`] with `options`.
+pub fn install_with(ctx: &egui::Context, bar: &MenuBar, options: MacOptions) -> Option<NativeMenu> {
     MainThreadMarker::new()?;
     if INSTALLED.swap(true, Ordering::SeqCst) {
         return None;
     }
-    let mut menu = MacMenu::new(ctx);
+    let mut menu = MacMenu::new(ctx, options);
     if !menu.build(bar) {
         INSTALLED.store(false, Ordering::SeqCst);
         return None;
@@ -237,10 +266,11 @@ struct MacMenu {
     window: Option<WindowMenu>,
     /// The latest menus, waiting for the open menu to close.
     pending: Option<MenuBar>,
+    options: MacOptions,
 }
 
 impl MacMenu {
-    fn new(ctx: &egui::Context) -> MacMenu {
+    fn new(ctx: &egui::Context, options: MacOptions) -> MacMenu {
         let (tx, rx) = channel();
         MacMenu {
             ctx: ctx.clone(),
@@ -252,6 +282,7 @@ impl MacMenu {
             structure: 0,
             window: None,
             pending: None,
+            options,
         }
     }
 
@@ -274,7 +305,7 @@ impl MacMenu {
                 if m.role == MenuRole::Window {
                     window = Some((sub.clone(), ids, window_key(bar)));
                 }
-                if matches!(m.role, MenuRole::Window | MenuRole::Help) {
+                if m.role == MenuRole::Help || (m.role == MenuRole::Window && self.options.window_list) {
                     special.push((m.role, sub));
                 }
             }
@@ -302,7 +333,9 @@ impl MacMenu {
                 if let Some(old) = &self.menu {
                     let _ = catch_unwind(AssertUnwindSafe(|| {
                         old.init_for_nsapp();
-                        if let Some((sub, ..)) = &self.window {
+                        if let Some((sub, ..)) = &self.window
+                            && self.options.window_list
+                        {
                             sub.set_as_windows_menu_for_nsapp();
                         }
                     }));
@@ -334,7 +367,9 @@ impl MacMenu {
                 let _ = menu.insert(&old, at);
                 return Err(e);
             }
-            sub.set_as_windows_menu_for_nsapp();
+            if self.options.window_list {
+                sub.set_as_windows_menu_for_nsapp();
+            }
             Ok((sub, ids, window_key(bar)))
         }));
         match replaced {

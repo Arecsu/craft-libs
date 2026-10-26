@@ -65,6 +65,11 @@ struct Bar {
     pointer: Pos2,
     tree: Vec<(NodeId, accesskit::Node)>,
     clicked: Vec<CommandRef>,
+    /// `shrink_to_fit`'s limit; the bar then shares a row with a label, which starts at `after`.
+    fit: Option<f32>,
+    after: Option<f32>,
+    /// The viewport commands the bar sent.
+    sent: Vec<egui::ViewportCommand>,
 }
 
 impl Bar {
@@ -88,6 +93,9 @@ impl Bar {
             pointer: pos2(-10.0, -10.0),
             tree: Vec::new(),
             clicked: Vec::new(),
+            fit: None,
+            after: None,
+            sent: Vec::new(),
         };
         b.run(3);
         b
@@ -102,16 +110,29 @@ impl Bar {
             events: std::mem::take(&mut self.events),
             ..Default::default()
         };
-        let (bar, gate, target, english, preferred) = (&self.bar, self.gate, self.target, self.english, &self.preferred);
+        let (bar, gate, target, english, preferred, fit) = (&self.bar, self.gate, self.target, self.english, &self.preferred, self.fit);
         let mut out = Vec::new();
+        let mut after = None;
         let mut full = self.ctx.run_ui(raw, |ui| {
             let mut ui_bar = MenuBarUi::new(bar).gate(gate).target(target).mnemonics(preferred);
             if let Some(english) = &english {
                 ui_bar = ui_bar.english(english);
             }
-            out = ui_bar.show(ui);
+            match fit {
+                Some(max) => {
+                    ui.horizontal(|ui| {
+                        out = ui_bar.shrink_to_fit(max).show(ui);
+                        after = Some(ui.label("after").rect.left());
+                    });
+                }
+                None => out = ui_bar.show(ui),
+            }
         });
         full.textures_delta.clear();
+        self.after = after;
+        if let Some(root) = full.viewport_output.remove(&egui::ViewportId::ROOT) {
+            self.sent.extend(root.commands);
+        }
         if let Some(update) = full.platform_output.accesskit_update {
             self.tree = update.nodes;
         }
@@ -273,7 +294,8 @@ fn disabled_and_gate_forbidden_items_return_nothing() {
     b.click("New");
     assert!(b.take().is_empty(), "and they don't run");
     b.click("Quit");
-    assert_eq!(b.take(), vec![Builtin::Quit.command()], "the built-in Quit still runs");
+    assert!(b.take().is_empty(), "the bar runs the built-in Quit itself");
+    assert!(b.sent.contains(&egui::ViewportCommand::Close), "and it still runs: the window is asked to close");
 
     b.gate = Gate { text_editing: true, ..Gate::default() };
     b.click("File");
@@ -444,6 +466,26 @@ fn the_web_shows_the_browsers_system_names_and_the_mac_its_glyphs() {
         assert_eq!(new.and_then(|n| n.keyboard_shortcut()), Some(text), "{target:?} on {os:?}");
         assert_eq!(new.and_then(|n| n.access_key()).is_some(), mnemonic, "{target:?} on {os:?}");
     }
+}
+
+/// `shrink_to_fit` leaves the rest of the row to other controls; past its limit the menus
+/// overflow into "⋯".
+#[test]
+fn a_bar_shrunk_to_fit_shares_its_row() {
+    let mut b = wide();
+    b.fit = Some(f32::INFINITY);
+    b.run(2);
+    let after = b.after.expect("the label after the bar");
+    assert!(after < b.size.x / 2.0, "the bar takes only its titles' width: {after}");
+    assert!(b.title("Help").is_some() && b.title("⋯").is_none());
+    b.fit = Some(100.0);
+    b.run(2);
+    assert!(b.title("⋯").is_some(), "the menus past 100 points overflow");
+    // The bar's 100 points and the row's item spacing (8).
+    assert!(b.after.is_some_and(|x| x <= 109.0), "{:?}", b.after);
+    // A limit an app computed from a full row can go negative.
+    b.fit = Some(-20.0);
+    b.run(2);
 }
 
 /// A menu far taller than the window.
